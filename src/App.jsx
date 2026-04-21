@@ -151,7 +151,6 @@ export default function ClientTracker() {
       savePayments({ ...payments, [key]: { ...ex, status } });
     }
   }
-...ex,status}});
   }
   function logPayment(cid,amount) {
     const key=getPKey(cid,viewMonth,viewYear); const ex=payments[key]||{status:"pending",amountPaid:0};
