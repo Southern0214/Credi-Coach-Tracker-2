@@ -133,9 +133,25 @@ export default function ClientTracker() {
   const saveQuotes           = useCallback(async d => { setQuotes(d);           await dbSet("quotes",           d); },[]);
 
   function getPayData(cid) { return payments[getPKey(cid,viewMonth,viewYear)] || { status:"pending", amountPaid:0 }; }
-  function setStatus(cid,status) {
-    const key=getPKey(cid,viewMonth,viewYear); const ex=payments[key]||{status:"pending",amountPaid:0};
-    savePayments({...payments,[key]:{...ex,status}});
+  function setStatus(cid, status) {
+    const key    = getPKey(cid, viewMonth, viewYear);
+    const ex     = payments[key] || { status:"pending", amountPaid:0 };
+    const client = clients.find(c => c.id === cid);
+    if (status === "paid" && client && parseFloat(client.monthlyAmount) > 0 && (parseFloat(ex.amountPaid)||0) === 0) {
+      const monthly = parseFloat(client.monthlyAmount);
+      const updated = { ...payments, [key]: { status:"paid", amountPaid: monthly } };
+      savePayments(updated);
+      const total   = parseFloat(client.quotedTotal)||0;
+      const allPaid = Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
+      if (total > 0 && allPaid >= total) {
+        saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]);
+        saveClients(clients.filter(c=>c.id!==cid));
+      }
+    } else {
+      savePayments({ ...payments, [key]: { ...ex, status } });
+    }
+  }
+...ex,status}});
   }
   function logPayment(cid,amount) {
     const key=getPKey(cid,viewMonth,viewYear); const ex=payments[key]||{status:"pending",amountPaid:0};
