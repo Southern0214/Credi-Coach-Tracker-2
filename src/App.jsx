@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "./supabase.js";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -64,6 +64,45 @@ function getDisputeStatus(daysSince) {
   return "ok";
 }
 
+function parseCSV(text) {
+  const lines = text.trim().split("\n");
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g,"").toLowerCase());
+  return lines.slice(1).map(line => {
+    const vals = [];
+    let cur = "", inQ = false;
+    for (let i=0;i<line.length;i++) {
+      if (line[i]==='"') { inQ=!inQ; }
+      else if (line[i]==="," && !inQ) { vals.push(cur.trim()); cur=""; }
+      else { cur+=line[i]; }
+    }
+    vals.push(cur.trim());
+    const row = {};
+    headers.forEach((h,i) => { row[h] = (vals[i]||"").replace(/^"|"$/g,""); });
+    return row;
+  }).filter(r => Object.values(r).some(v=>v));
+}
+
+function mapCRCRow(row) {
+  const find = (...keys) => {
+    for (const k of keys) {
+      const match = Object.keys(row).find(h => h.includes(k));
+      if (match && row[match]) return row[match];
+    }
+    return "";
+  };
+  return {
+    id: genId(),
+    firstName:       find("first"),
+    lastName:        find("last"),
+    processingDate:  find("process","date","next"),
+    creditMonitoring:find("monitor","credit monitor"),
+    service:         find("service","type","program"),
+    notes:           find("note","comment"),
+    createdAt:       new Date().toISOString(),
+  };
+}
+
 async function dbGet(key) {
   const { data, error } = await supabase.from("tracker_data").select("value").eq("key", key).maybeSingle();
   if (error) { console.error("dbGet error", key, error); return null; }
@@ -95,6 +134,9 @@ export default function ClientTracker() {
   const [disputeFilter,    setDisputeFilter]     = useState("all");
   const [payInput,         setPayInput]          = useState({});
   const [alarmDismissed,   setAlarmDismissed]    = useState(false);
+  const [csvDragging,      setCsvDragging]       = useState(false);
+  const [csvImportMsg,     setCsvImportMsg]      = useState("");
+  const csvFileRef = useRef();
 
   const blankClient  = { name:"", company:"", monthlyAmount:"", quotedTotal:"", dueDay:"", notes:"" };
   const blankPIF     = { name:"", company:"", amount:"", paidDate:"", notes:"" };
@@ -133,6 +175,7 @@ export default function ClientTracker() {
   const saveQuotes           = useCallback(async d => { setQuotes(d);           await dbSet("quotes",           d); },[]);
 
   function getPayData(cid) { return payments[getPKey(cid,viewMonth,viewYear)] || { status:"pending", amountPaid:0 }; }
+
   function setStatus(cid, status) {
     const key    = getPKey(cid, viewMonth, viewYear);
     const ex     = payments[key] || { status:"pending", amountPaid:0 };
@@ -151,22 +194,25 @@ export default function ClientTracker() {
       savePayments({ ...payments, [key]: { ...ex, status } });
     }
   }
-  }
-  function logPayment(cid,amount) {
-    const key=getPKey(cid,viewMonth,viewYear); const ex=payments[key]||{status:"pending",amountPaid:0};
-    const newPaid=(parseFloat(ex.amountPaid)||0)+(parseFloat(amount)||0);
-    const updated={...payments,[key]:{status:"paid",amountPaid:newPaid}};
-    savePayments(updated); setPayInput(p=>({...p,[cid]:""}));
-    const client=clients.find(c=>c.id===cid);
+
+  function logPayment(cid, amount) {
+    const key     = getPKey(cid, viewMonth, viewYear);
+    const ex      = payments[key] || { status:"pending", amountPaid:0 };
+    const newPaid = (parseFloat(ex.amountPaid)||0) + (parseFloat(amount)||0);
+    const updated = { ...payments, [key]: { status:"paid", amountPaid: newPaid } };
+    savePayments(updated);
+    setPayInput(p => ({ ...p, [cid]:"" }));
+    const client = clients.find(c => c.id===cid);
     if (client) {
-      const total=parseFloat(client.quotedTotal)||0;
-      const allPaid=Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
-      if (total>0 && allPaid>=total) {
+      const total   = parseFloat(client.quotedTotal)||0;
+      const allPaid = Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
+      if (total > 0 && allPaid >= total) {
         saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]);
         saveClients(clients.filter(c=>c.id!==cid));
       }
     }
   }
+
   function resetPay(cid) { const key=getPKey(cid,viewMonth,viewYear); savePayments({...payments,[key]:{status:"pending",amountPaid:0}}); }
   function totalPaidAllTime(cid) { return Object.entries(payments).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0); }
   function getRemaining(c) { const q=parseFloat(c.quotedTotal); if (!q) return null; return Math.max(0,q-totalPaidAllTime(c.id)); }
@@ -176,8 +222,8 @@ export default function ClientTracker() {
     saveClients(clients.filter(c=>c.id!==cid));
   }
 
-  function addClient() { if (!newClient.name.trim()) return; saveClients([...clients,{id:genId(),...newClient,createdAt:new Date().toISOString()}]); setNewClient(blankClient); setShowAddClient(false); }
-  function addPIF()    { if (!newPIF.name.trim())    return; savePifClients([...pifClients,{id:genId(),...newPIF,createdAt:new Date().toISOString()}]); setNewPIF(blankPIF); setShowAddPIF(false); }
+  function addClient()  { if (!newClient.name.trim()) return; saveClients([...clients,{id:genId(),...newClient,createdAt:new Date().toISOString()}]); setNewClient(blankClient); setShowAddClient(false); }
+  function addPIF()     { if (!newPIF.name.trim())    return; savePifClients([...pifClients,{id:genId(),...newPIF,createdAt:new Date().toISOString()}]); setNewPIF(blankPIF); setShowAddPIF(false); }
   function updateField(id,field,value) { saveClients(clients.map(c=>c.id===id?{...c,[field]:value}:c)); }
   function removeClient(id)    { saveClients(clients.filter(c=>c.id!==id)); }
   function removePIF(id)       { savePifClients(pifClients.filter(c=>c.id!==id)); }
@@ -206,6 +252,24 @@ export default function ClientTracker() {
   function markProcessed(id) {
     saveDisputeClients(disputeClients.map(c=>c.id===id?{...c,processingDate:new Date().toISOString().split("T")[0]}:c));
     setAlarmDismissed(false);
+  }
+
+  function handleCSVImport(file) {
+    if (!file || !file.name.endsWith(".csv")) { setCsvImportMsg("Please drop a .csv file"); return; }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const rows   = parseCSV(e.target.result);
+        const mapped = rows.map(mapCRCRow).filter(r => r.firstName);
+        if (mapped.length === 0) { setCsvImportMsg("No valid rows found. Check column names."); return; }
+        const existing = new Set(disputeClients.map(c=>`${c.firstName}${c.lastName}`.toLowerCase()));
+        const newOnes  = mapped.filter(r => !existing.has(`${r.firstName}${r.lastName}`.toLowerCase()));
+        saveDisputeClients([...disputeClients, ...newOnes]);
+        setCsvImportMsg(`Imported ${newOnes.length} new client${newOnes.length!==1?"s":""} (${mapped.length-newOnes.length} skipped as duplicates)`);
+        setTimeout(() => setCsvImportMsg(""), 5000);
+      } catch(err) { setCsvImportMsg("Error reading CSV: " + err.message); }
+    };
+    reader.readAsText(file);
   }
 
   function shiftMonth(dir) {
@@ -272,15 +336,15 @@ export default function ClientTracker() {
       return {...c,daysSince:days,disputeStatus:status};
     }).sort((a,b)=>{
       const order={alarm:0,overdue:1,warning:2,ok:3,none:4};
-      return (order[a.disputeStatus]||4)-(order[b.disputeStatus]||4);
+      if (order[a.disputeStatus]!==order[b.disputeStatus]) return (order[a.disputeStatus]||4)-(order[b.disputeStatus]||4);
+      return (a.daysSince||0)-(b.daysSince||0);
     });
   },[disputeClients]);
 
   const filteredDisputes = disputeFilter==="all"?disputeWithStatus:disputeWithStatus.filter(c=>c.disputeStatus===disputeFilter);
   const alarmClients     = disputeWithStatus.filter(c=>c.disputeStatus==="alarm");
   const hasAlarm         = alarmClients.length>0 && !alarmDismissed;
-
-  const dispCounts = {alarm:0,overdue:0,warning:0,ok:0,none:0};
+  const dispCounts       = {alarm:0,overdue:0,warning:0,ok:0,none:0};
   disputeWithStatus.forEach(c=>{dispCounts[c.disputeStatus]=(dispCounts[c.disputeStatus]||0)+1;});
 
   if (loading) return (
@@ -311,10 +375,11 @@ export default function ClientTracker() {
         .pbar{height:4px;background:#1e293b;border-radius:2px;overflow:hidden;margin-top:4px}
         .pfill{height:100%;border-radius:2px;transition:width 0.5s ease}
         @keyframes flashRed{0%,100%{background:#1a0000}50%{background:#3a0000}}
-        @keyframes flashBorder{0%,100%{border-color:#ef444460}50%{border-color:#ef4444}}
         @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
-        .alarm-row{animation:flashRed 0.8s infinite}
         .alarm-banner{animation:flashRed 1s infinite}
+        .csv-drop{border:2px dashed #334155;border-radius:8px;padding:24px;text-align:center;transition:all 0.2s;cursor:pointer}
+        .csv-drop.dragging{border-color:#7c3aed;background:#1a0a2e}
+        .csv-drop:hover{border-color:#475569}
       `}</style>
 
       {hasAlarm && (
@@ -353,10 +418,10 @@ export default function ClientTracker() {
           <button key={k} className="btn" onClick={()=>setTab(k)} style={{background:"none",color:tab===k?"#3b82f6":"#64748b",padding:"12px 16px",borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",fontSize:11,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>{label}</button>
         ))}
         <div style={{flex:1}}/>
-        {tab==="payments"  && <><button className="btn" onClick={exportPayments} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddClient(true)} style={{background:"#1d4ed8",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD CLIENT</button></>}
-        {tab==="disputes"  && <><button className="btn" onClick={exportDisputes} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddDispute(true)} style={{background:"#7c3aed",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD CLIENT</button></>}
-        {tab==="pif"       && <><button className="btn" onClick={exportPIF}      style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddPIF(true)}   style={{background:"#065f46",color:"#34d399",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD PIF</button></>}
-        {tab==="quotes"    && <><button className="btn" onClick={exportQuotes}   style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddQuote(true)}  style={{background:"#1d4ed8",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD QUOTE</button></>}
+        {tab==="payments" && <><button className="btn" onClick={exportPayments} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddClient(true)} style={{background:"#1d4ed8",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD CLIENT</button></>}
+        {tab==="disputes" && <><button className="btn" onClick={exportDisputes} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddDispute(true)} style={{background:"#7c3aed",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD CLIENT</button></>}
+        {tab==="pif"      && <><button className="btn" onClick={exportPIF}      style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddPIF(true)}   style={{background:"#065f46",color:"#34d399",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD PIF</button></>}
+        {tab==="quotes"   && <><button className="btn" onClick={exportQuotes}   style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddQuote(true)}  style={{background:"#1d4ed8",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD QUOTE</button></>}
       </div>
 
       {tab==="payments" && (
@@ -446,7 +511,8 @@ export default function ClientTracker() {
                     {isExp&&(
                       <div style={{background:"#0b1018",borderTop:"1px solid #1e293b30",padding:"16px 20px 16px 50px",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:20}}>
                         <div>
-                          <div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:8}}>LOG PAYMENT — {MONTHS[viewMonth].toUpperCase()}</div>
+                          <div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:6}}>LOG PAYMENT — {MONTHS[viewMonth].toUpperCase()}</div>
+                          <div style={{fontSize:10,color:"#334155",marginBottom:8}}>Clicking Paid auto-logs monthly amount. Use below for a different amount.</div>
                           <div style={{display:"flex",gap:6}}>
                             <input type="number" placeholder={c.monthlyAmount?`e.g. ${fmt(c.monthlyAmount)}`:"Amount"} value={payInput[c.id]||""} onChange={e=>setPayInput(p=>({...p,[c.id]:e.target.value}))} onClick={e=>e.stopPropagation()} style={{flex:1}}/>
                             <button className="btn" onClick={e=>{e.stopPropagation();logPayment(c.id,payInput[c.id]);}} style={{background:"#166534",color:"#22c55e",padding:"6px 12px",borderRadius:4,whiteSpace:"nowrap"}}>+ LOG</button>
@@ -485,13 +551,27 @@ export default function ClientTracker() {
 
       {tab==="disputes" && (
         <div style={{padding:"20px 24px"}}>
+          <div
+            className={`csv-drop${csvDragging?" dragging":""}`}
+            style={{marginBottom:20}}
+            onDragOver={e=>{e.preventDefault();setCsvDragging(true);}}
+            onDragLeave={()=>setCsvDragging(false)}
+            onDrop={e=>{e.preventDefault();setCsvDragging(false);handleCSVImport(e.dataTransfer.files[0]);}}
+            onClick={()=>csvFileRef.current?.click()}
+          >
+            <input ref={csvFileRef} type="file" accept=".csv" style={{display:"none"}} onChange={e=>handleCSVImport(e.target.files[0])}/>
+            <div style={{fontSize:24,marginBottom:6}}>📂</div>
+            <div style={{fontSize:12,color:"#64748b",letterSpacing:"0.08em"}}>DROP YOUR CREDIT REPAIR CLOUD CSV HERE</div>
+            <div style={{fontSize:10,color:"#334155",marginTop:4}}>or click to browse — duplicates auto-skipped</div>
+            {csvImportMsg&&<div style={{marginTop:10,fontSize:11,color:csvImportMsg.includes("Import")?"#22c55e":"#f87171",fontWeight:500}}>{csvImportMsg}</div>}
+          </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:20}}>
             {[
-              {key:"all",   label:"Total",    color:"#94a3b8", count:disputeClients.length},
-              {key:"alarm", label:"OVERDUE",  color:"#ef4444", count:dispCounts.alarm||0},
-              {key:"overdue",label:"Due Soon", color:"#f97316", count:dispCounts.overdue||0},
-              {key:"warning",label:"Warning",  color:"#facc15", count:dispCounts.warning||0},
-              {key:"ok",    label:"On Track", color:"#22c55e", count:dispCounts.ok||0},
+              {key:"all",    label:"Total",    color:"#94a3b8", count:disputeClients.length},
+              {key:"alarm",  label:"OVERDUE",  color:"#ef4444", count:dispCounts.alarm||0},
+              {key:"overdue",label:"Due Soon",  color:"#f97316", count:dispCounts.overdue||0},
+              {key:"warning",label:"Warning",   color:"#facc15", count:dispCounts.warning||0},
+              {key:"ok",     label:"On Track",  color:"#22c55e", count:dispCounts.ok||0},
             ].map(item=>(
               <button key={item.key} className="btn" onClick={()=>setDisputeFilter(disputeFilter===item.key&&item.key!=="all"?"all":item.key)} style={{background:disputeFilter===item.key?"#1e293b":"#0f172a",border:`1px solid ${disputeFilter===item.key?item.color:"#1e293b"}`,borderRadius:6,padding:"10px 14px",textAlign:"left"}}>
                 <div style={{fontSize:22,fontFamily:"'Bebas Neue'",color:item.color}}>{item.count}</div>
@@ -500,7 +580,7 @@ export default function ClientTracker() {
             ))}
           </div>
           {disputeClients.length===0?(
-            <div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO DISPUTE CLIENTS YET — ADD YOUR FIRST ONE</div></div>
+            <div style={{textAlign:"center",padding:"40px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO DISPUTE CLIENTS YET — IMPORT CSV OR ADD MANUALLY</div></div>
           ):(
             <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
               <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px",padding:"8px 14px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8,alignItems:"center"}}>
@@ -508,9 +588,7 @@ export default function ClientTracker() {
               </div>
               {filteredDisputes.map((c,i)=>{
                 const isExp=expandedDispId===c.id;
-                const isAlarm=c.disputeStatus==="alarm";
-                const isOver=c.disputeStatus==="overdue";
-                const isWarn=c.disputeStatus==="warning";
+                const isAlarm=c.disputeStatus==="alarm"; const isOver=c.disputeStatus==="overdue"; const isWarn=c.disputeStatus==="warning";
                 const statusColor=isAlarm?"#ef4444":isOver?"#f97316":isWarn?"#facc15":"#22c55e";
                 const statusLabel=isAlarm?"OVERDUE":isOver?"DUE SOON":isWarn?"WARNING":"ON TRACK";
                 const rowBg=isAlarm?(i%2===0?"#1a0000":"#1e0000"):isOver?(i%2===0?"#1a0800":"#1e0a00"):(i%2===0?"#080c10":"#090d13");
@@ -518,10 +596,7 @@ export default function ClientTracker() {
                   <div key={c.id} style={{borderTop:i===0?"none":"1px solid #1e293b20"}}>
                     <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px",padding:"11px 14px",alignItems:"center",background:rowBg,gap:8,cursor:"pointer",borderLeft:`3px solid ${statusColor}60`,animation:isAlarm?"flashRed 0.8s infinite":""}} onClick={()=>setExpandedDispId(isExp?null:c.id)}>
                       <div style={{color:"#334155",fontSize:11,userSelect:"none"}}>{isExp?"▾":"▸"}</div>
-                      <div>
-                        <div style={{fontSize:13,fontWeight:500,color:isAlarm?"#fca5a5":"#e2e8f0"}}>{c.firstName} {c.lastName}</div>
-                        {c.notes&&<div style={{fontSize:9,color:"#475569",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:160}}>{c.notes}</div>}
-                      </div>
+                      <div><div style={{fontSize:13,fontWeight:500,color:isAlarm?"#fca5a5":"#e2e8f0"}}>{c.firstName} {c.lastName}</div>{c.notes&&<div style={{fontSize:9,color:"#475569",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:160}}>{c.notes}</div>}</div>
                       <div style={{fontSize:12,color:"#64748b"}}>{c.processingDate||"—"}</div>
                       <div style={{fontSize:14,fontWeight:600,color:statusColor}}>{c.daysSince!==null?c.daysSince:"—"}</div>
                       <div><span style={{padding:"2px 8px",borderRadius:20,fontSize:9,letterSpacing:"0.08em",background:isAlarm?"#200000":isOver?"#1a0800":isWarn?"#1a1600":"#052e16",color:statusColor,border:`1px solid ${statusColor}40`}}>{statusLabel}</span></div>
@@ -628,11 +703,8 @@ export default function ClientTracker() {
       )}
 
       {showAddClient&&(<div className="modal-overlay" onClick={()=>setShowAddClient(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:20}}>ADD PAYMENT CLIENT</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newClient.name} onChange={e=>setNewClient({...newClient,name:e.target.value})}/><input placeholder="Company" value={newClient.company} onChange={e=>setNewClient({...newClient,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>MONTHLY PMT</div><input placeholder="e.g. 1500" type="number" value={newClient.monthlyAmount} onChange={e=>setNewClient({...newClient,monthlyAmount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>TOTAL QUOTED</div><input placeholder="e.g. 6000" type="number" value={newClient.quotedTotal} onChange={e=>setNewClient({...newClient,quotedTotal:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DUE DAY</div><input placeholder="e.g. 15" type="number" min="1" max="31" value={newClient.dueDay} onChange={e=>setNewClient({...newClient,dueDay:e.target.value})}/></div></div><textarea placeholder="Notes" rows={2} value={newClient.notes} onChange={e=>setNewClient({...newClient,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{fontSize:10,color:"#475569",marginTop:10,lineHeight:1.6}}>Contract length auto-calculated from Total Quoted / Monthly Payment.</div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addClient} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddClient(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
-
-      {showAddDispute&&(<div className="modal-overlay" onClick={()=>setShowAddDispute(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#a78bfa"}}>ADD DISPUTE CLIENT</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>35-DAY PROCESSING CYCLE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>FIRST NAME *</div><input placeholder="First" value={newDispute.firstName} onChange={e=>setNewDispute({...newDispute,firstName:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST NAME</div><input placeholder="Last" value={newDispute.lastName} onChange={e=>setNewDispute({...newDispute,lastName:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PROCESSING DATE (last processed)</div><input type="date" value={newDispute.processingDate} onChange={e=>setNewDispute({...newDispute,processingDate:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>CREDIT MONITORING SERVICE</div><select value={newDispute.creditMonitoring} onChange={e=>setNewDispute({...newDispute,creditMonitoring:e.target.value})}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newDispute.service} onChange={e=>setNewDispute({...newDispute,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><textarea placeholder="Notes" rows={2} value={newDispute.notes} onChange={e=>setNewDispute({...newDispute,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addDisputeClient} style={{background:"#7c3aed",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddDispute(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
-
+      {showAddDispute&&(<div className="modal-overlay" onClick={()=>setShowAddDispute(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#a78bfa"}}>ADD DISPUTE CLIENT</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>35-DAY PROCESSING CYCLE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>FIRST NAME *</div><input placeholder="First" value={newDispute.firstName} onChange={e=>setNewDispute({...newDispute,firstName:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST NAME</div><input placeholder="Last" value={newDispute.lastName} onChange={e=>setNewDispute({...newDispute,lastName:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PROCESSING DATE</div><input type="date" value={newDispute.processingDate} onChange={e=>setNewDispute({...newDispute,processingDate:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>CREDIT MONITORING SERVICE</div><select value={newDispute.creditMonitoring} onChange={e=>setNewDispute({...newDispute,creditMonitoring:e.target.value})}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newDispute.service} onChange={e=>setNewDispute({...newDispute,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><textarea placeholder="Notes" rows={2} value={newDispute.notes} onChange={e=>setNewDispute({...newDispute,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addDisputeClient} style={{background:"#7c3aed",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddDispute(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
       {showAddPIF&&(<div className="modal-overlay" onClick={()=>setShowAddPIF(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#34d399"}}>ADD PAY IN FULL</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>ONE-TIME PAYMENT — DOES NOT RECUR</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newPIF.name} onChange={e=>setNewPIF({...newPIF,name:e.target.value})}/><input placeholder="Company" value={newPIF.company} onChange={e=>setNewPIF({...newPIF,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>AMOUNT PAID</div><input placeholder="e.g. 5000" type="number" value={newPIF.amount} onChange={e=>setNewPIF({...newPIF,amount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DATE PAID</div><input type="date" value={newPIF.paidDate} onChange={e=>setNewPIF({...newPIF,paidDate:e.target.value})}/></div></div><textarea placeholder="Notes / scope" rows={2} value={newPIF.notes} onChange={e=>setNewPIF({...newPIF,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addPIF} style={{background:"#065f46",color:"#34d399",padding:"10px 20px",borderRadius:4,flex:1}}>SAVE PIF CLIENT</button><button className="btn" onClick={()=>setShowAddPIF(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
-
       {showAddQuote&&(<div className="modal-overlay" onClick={()=>setShowAddQuote(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4}}>NEW QUOTE</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em",marginBottom:16}}>{MONTHS[viewMonth].toUpperCase()} {viewYear}</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Contact name *" value={newQuote.name} onChange={e=>setNewQuote({...newQuote,name:e.target.value})}/><input placeholder="Company" value={newQuote.company} onChange={e=>setNewQuote({...newQuote,company:e.target.value})}/><input placeholder="Quote amount (e.g. 2500)" type="number" value={newQuote.amount} onChange={e=>setNewQuote({...newQuote,amount:e.target.value})}/><textarea placeholder="What was quoted / scope notes" rows={3} value={newQuote.notes} onChange={e=>setNewQuote({...newQuote,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addQuote} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>SAVE QUOTE</button><button className="btn" onClick={()=>setShowAddQuote(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
     </div>
   );
