@@ -52,15 +52,14 @@ function isClientActiveInMonth(client, month, year) {
 
 function getDaysSince(dateStr) {
   if (!dateStr) return null;
-  const diff = Date.now() - new Date(dateStr).getTime();
-  return Math.floor(diff / (1000*60*60*24));
+  return Math.floor((Date.now() - new Date(dateStr).getTime()) / (1000*60*60*24));
 }
 
 function getDisputeStatus(daysSince) {
   if (daysSince === null) return "none";
-  if (daysSince > 35)  return "alarm";
-  if (daysSince > 30)  return "overdue";
-  if (daysSince > 25)  return "warning";
+  if (daysSince > 35) return "alarm";
+  if (daysSince > 30) return "overdue";
+  if (daysSince > 25) return "warning";
   return "ok";
 }
 
@@ -69,8 +68,7 @@ function parseCSV(text) {
   if (lines.length < 2) return [];
   const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g,"").toLowerCase());
   return lines.slice(1).map(line => {
-    const vals = [];
-    let cur = "", inQ = false;
+    const vals = []; let cur = "", inQ = false;
     for (let i=0;i<line.length;i++) {
       if (line[i]==='"') { inQ=!inQ; }
       else if (line[i]==="," && !inQ) { vals.push(cur.trim()); cur=""; }
@@ -84,22 +82,19 @@ function parseCSV(text) {
 }
 
 function mapCRCRow(row) {
-  const find = (...keys) => {
-    for (const k of keys) {
-      const match = Object.keys(row).find(h => h.includes(k));
-      if (match && row[match]) return row[match];
-    }
-    return "";
-  };
+  const firstName = row["first name"] || row["firstname"] || row["first"] || "";
+  const lastName  = row["last name"]  || row["lastname"]  || row["last"]  || "";
+  const find = (...keys) => { for (const k of keys) { const m=Object.keys(row).find(h=>h.includes(k)); if (m&&row[m]) return row[m]; } return ""; };
   return {
     id: genId(),
-    firstName:       find("first"),
-    lastName:        find("last"),
-    processingDate:  find("process","date","next"),
-    creditMonitoring:find("monitor","credit monitor"),
-    service:         find("service","type","program"),
-    notes:           find("note","comment"),
-    createdAt:       new Date().toISOString(),
+    firstName,
+    lastName,
+    processingDate:   row["processing date"] || row["processingdate"] || find("process","date") || "",
+    creditMonitoring: row["credit monitoring service"] || row["creditmonitoring"] || find("monitor") || "",
+    service:          row["service"] || find("service","type","program") || "",
+    notes:            row["notes"] || find("note","comment") || "",
+    partnerId:        "",
+    createdAt:        new Date().toISOString(),
   };
 }
 
@@ -114,34 +109,40 @@ async function dbSet(key, value) {
 }
 
 export default function ClientTracker() {
-  const [clients,          setClients]          = useState([]);
-  const [pifClients,       setPifClients]        = useState([]);
-  const [completedClients, setCompletedClients]  = useState([]);
-  const [disputeClients,   setDisputeClients]    = useState([]);
-  const [payments,         setPayments]          = useState({});
-  const [quotes,           setQuotes]            = useState({});
-  const [loading,          setLoading]           = useState(true);
-  const [tab,              setTab]               = useState("payments");
-  const [viewMonth,        setViewMonth]         = useState(THIS_MONTH);
-  const [viewYear,         setViewYear]          = useState(THIS_YEAR);
-  const [showAddClient,    setShowAddClient]      = useState(false);
-  const [showAddPIF,       setShowAddPIF]         = useState(false);
-  const [showAddQuote,     setShowAddQuote]       = useState(false);
-  const [showAddDispute,   setShowAddDispute]     = useState(false);
-  const [expandedId,       setExpandedId]        = useState(null);
-  const [expandedDispId,   setExpandedDispId]    = useState(null);
-  const [filterStatus,     setFilterStatus]      = useState("all");
-  const [disputeFilter,    setDisputeFilter]     = useState("all");
-  const [payInput,         setPayInput]          = useState({});
-  const [alarmDismissed,   setAlarmDismissed]    = useState(false);
-  const [csvDragging,      setCsvDragging]       = useState(false);
-  const [csvImportMsg,     setCsvImportMsg]      = useState("");
+  const [clients,          setClients]         = useState([]);
+  const [pifClients,       setPifClients]       = useState([]);
+  const [completedClients, setCompletedClients] = useState([]);
+  const [disputeClients,   setDisputeClients]   = useState([]);
+  const [partners,         setPartners]         = useState([]);
+  const [payments,         setPayments]         = useState({});
+  const [quotes,           setQuotes]           = useState({});
+  const [loading,          setLoading]          = useState(true);
+  const [tab,              setTab]              = useState("payments");
+  const [viewMonth,        setViewMonth]        = useState(THIS_MONTH);
+  const [viewYear,         setViewYear]         = useState(THIS_YEAR);
+  const [showAddClient,    setShowAddClient]    = useState(false);
+  const [showAddPIF,       setShowAddPIF]       = useState(false);
+  const [showAddQuote,     setShowAddQuote]     = useState(false);
+  const [showAddDispute,   setShowAddDispute]   = useState(false);
+  const [showAddPartner,   setShowAddPartner]   = useState(false);
+  const [selectedPartner,  setSelectedPartner]  = useState(null);
+  const [expandedId,       setExpandedId]       = useState(null);
+  const [expandedDispId,   setExpandedDispId]   = useState(null);
+  const [filterStatus,     setFilterStatus]     = useState("all");
+  const [disputeFilter,    setDisputeFilter]    = useState("all");
+  const [searchQuery,      setSearchQuery]      = useState("");
+  const [disputeSearch,    setDisputeSearch]    = useState("");
+  const [payInput,         setPayInput]         = useState({});
+  const [alarmDismissed,   setAlarmDismissed]   = useState(false);
+  const [csvDragging,      setCsvDragging]      = useState(false);
+  const [csvImportMsg,     setCsvImportMsg]     = useState("");
+  const [newPartnerName,   setNewPartnerName]   = useState("");
   const csvFileRef = useRef();
 
-  const blankClient  = { name:"", company:"", monthlyAmount:"", quotedTotal:"", dueDay:"", notes:"" };
+  const blankClient  = { name:"", company:"", monthlyAmount:"", quotedTotal:"", dueDay:"", notes:"", partnerId:"" };
   const blankPIF     = { name:"", company:"", amount:"", paidDate:"", notes:"" };
   const blankQuote   = { name:"", company:"", amount:"", notes:"" };
-  const blankDispute = { firstName:"", lastName:"", processingDate:"", creditMonitoring:"", service:"", notes:"" };
+  const blankDispute = { firstName:"", lastName:"", processingDate:"", creditMonitoring:"", service:"", notes:"", partnerId:"" };
 
   const [newClient,  setNewClient]  = useState(blankClient);
   const [newPIF,     setNewPIF]     = useState(blankPIF);
@@ -152,8 +153,9 @@ export default function ClientTracker() {
     async function load() {
       setLoading(true);
       try {
-        const [c,p,q,pif,comp,disp] = await Promise.all([
-          dbGet("clients"),dbGet("payments"),dbGet("quotes"),dbGet("pifClients"),dbGet("completedClients"),dbGet("disputeClients"),
+        const [c,p,q,pif,comp,disp,part] = await Promise.all([
+          dbGet("clients"),dbGet("payments"),dbGet("quotes"),dbGet("pifClients"),
+          dbGet("completedClients"),dbGet("disputeClients"),dbGet("partners"),
         ]);
         if (c)    setClients(c);
         if (p)    setPayments(p);
@@ -161,6 +163,7 @@ export default function ClientTracker() {
         if (pif)  setPifClients(pif);
         if (comp) setCompletedClients(comp);
         if (disp) setDisputeClients(disp);
+        if (part) setPartners(part);
       } catch(e) { console.error("Load error",e); }
       setLoading(false);
     }
@@ -171,49 +174,39 @@ export default function ClientTracker() {
   const savePifClients       = useCallback(async d => { setPifClients(d);       await dbSet("pifClients",       d); },[]);
   const saveCompletedClients = useCallback(async d => { setCompletedClients(d); await dbSet("completedClients", d); },[]);
   const saveDisputeClients   = useCallback(async d => { setDisputeClients(d);   await dbSet("disputeClients",   d); },[]);
+  const savePartners         = useCallback(async d => { setPartners(d);         await dbSet("partners",         d); },[]);
   const savePayments         = useCallback(async d => { setPayments(d);         await dbSet("payments",         d); },[]);
   const saveQuotes           = useCallback(async d => { setQuotes(d);           await dbSet("quotes",           d); },[]);
 
   function getPayData(cid) { return payments[getPKey(cid,viewMonth,viewYear)] || { status:"pending", amountPaid:0 }; }
 
   function setStatus(cid, status) {
-    const key    = getPKey(cid, viewMonth, viewYear);
-    const ex     = payments[key] || { status:"pending", amountPaid:0 };
-    const client = clients.find(c => c.id === cid);
-    if (status === "paid" && client && parseFloat(client.monthlyAmount) > 0 && (parseFloat(ex.amountPaid)||0) === 0) {
-      const monthly = parseFloat(client.monthlyAmount);
-      const updated = { ...payments, [key]: { status:"paid", amountPaid: monthly } };
+    const key=getPKey(cid,viewMonth,viewYear); const ex=payments[key]||{status:"pending",amountPaid:0};
+    const client=clients.find(c=>c.id===cid);
+    if (status==="paid" && client && parseFloat(client.monthlyAmount)>0 && (parseFloat(ex.amountPaid)||0)===0) {
+      const monthly=parseFloat(client.monthlyAmount);
+      const updated={...payments,[key]:{status:"paid",amountPaid:monthly}};
       savePayments(updated);
-      const total   = parseFloat(client.quotedTotal)||0;
-      const allPaid = Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
-      if (total > 0 && allPaid >= total) {
-        saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]);
-        saveClients(clients.filter(c=>c.id!==cid));
-      }
-    } else {
-      savePayments({ ...payments, [key]: { ...ex, status } });
-    }
+      const total=parseFloat(client.quotedTotal)||0;
+      const allPaid=Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
+      if (total>0 && allPaid>=total) { saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]); saveClients(clients.filter(c=>c.id!==cid)); }
+    } else { savePayments({...payments,[key]:{...ex,status}}); }
   }
 
   function logPayment(cid, amount) {
-    const key     = getPKey(cid, viewMonth, viewYear);
-    const ex      = payments[key] || { status:"pending", amountPaid:0 };
-    const newPaid = (parseFloat(ex.amountPaid)||0) + (parseFloat(amount)||0);
-    const updated = { ...payments, [key]: { status:"paid", amountPaid: newPaid } };
-    savePayments(updated);
-    setPayInput(p => ({ ...p, [cid]:"" }));
-    const client = clients.find(c => c.id===cid);
+    const key=getPKey(cid,viewMonth,viewYear); const ex=payments[key]||{status:"pending",amountPaid:0};
+    const newPaid=(parseFloat(ex.amountPaid)||0)+(parseFloat(amount)||0);
+    const updated={...payments,[key]:{status:"paid",amountPaid:newPaid}};
+    savePayments(updated); setPayInput(p=>({...p,[cid]:""}));
+    const client=clients.find(c=>c.id===cid);
     if (client) {
-      const total   = parseFloat(client.quotedTotal)||0;
-      const allPaid = Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
-      if (total > 0 && allPaid >= total) {
-        saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]);
-        saveClients(clients.filter(c=>c.id!==cid));
-      }
+      const total=parseFloat(client.quotedTotal)||0;
+      const allPaid=Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
+      if (total>0 && allPaid>=total) { saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]); saveClients(clients.filter(c=>c.id!==cid)); }
     }
   }
 
-  function resetPay(cid) { const key=getPKey(cid,viewMonth,viewYear); savePayments({...payments,[key]:{status:"pending",amountPaid:0}}); }
+  function resetPay(cid) { savePayments({...payments,[getPKey(cid,viewMonth,viewYear)]:{status:"pending",amountPaid:0}}); }
   function totalPaidAllTime(cid) { return Object.entries(payments).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0); }
   function getRemaining(c) { const q=parseFloat(c.quotedTotal); if (!q) return null; return Math.max(0,q-totalPaidAllTime(c.id)); }
   function moveToCompleted(cid) {
@@ -249,34 +242,38 @@ export default function ClientTracker() {
   }
   function removeDisputeClient(id) { saveDisputeClients(disputeClients.filter(c=>c.id!==id)); }
   function updateDisputeField(id,field,value) { saveDisputeClients(disputeClients.map(c=>c.id===id?{...c,[field]:value}:c)); }
-  function markProcessed(id) {
-    saveDisputeClients(disputeClients.map(c=>c.id===id?{...c,processingDate:new Date().toISOString().split("T")[0]}:c));
-    setAlarmDismissed(false);
+  function markProcessed(id) { saveDisputeClients(disputeClients.map(c=>c.id===id?{...c,processingDate:new Date().toISOString().split("T")[0]}:c)); setAlarmDismissed(false); }
+
+  function addPartner() {
+    if (!newPartnerName.trim()) return;
+    savePartners([...partners,{id:genId(),name:newPartnerName.trim(),createdAt:new Date().toISOString()}]);
+    setNewPartnerName(""); setShowAddPartner(false);
+  }
+  function removePartner(id) {
+    savePartners(partners.filter(p=>p.id!==id));
+    saveClients(clients.map(c=>c.partnerId===id?{...c,partnerId:""}:c));
+    saveDisputeClients(disputeClients.map(c=>c.partnerId===id?{...c,partnerId:""}:c));
   }
 
   function handleCSVImport(file) {
-    if (!file || !file.name.endsWith(".csv")) { setCsvImportMsg("Please drop a .csv file"); return; }
-    const reader = new FileReader();
-    reader.onload = (e) => {
+    if (!file||!file.name.endsWith(".csv")) { setCsvImportMsg("Please drop a .csv file"); return; }
+    const reader=new FileReader();
+    reader.onload=(e)=>{
       try {
-        const rows   = parseCSV(e.target.result);
-        const mapped = rows.map(mapCRCRow).filter(r => r.firstName);
-        if (mapped.length === 0) { setCsvImportMsg("No valid rows found. Check column names."); return; }
-        const existing = new Set(disputeClients.map(c=>`${c.firstName}${c.lastName}`.toLowerCase()));
-        const newOnes  = mapped.filter(r => !existing.has(`${r.firstName}${r.lastName}`.toLowerCase()));
-        saveDisputeClients([...disputeClients, ...newOnes]);
+        const rows=parseCSV(e.target.result);
+        const mapped=rows.map(mapCRCRow).filter(r=>r.firstName);
+        if (mapped.length===0) { setCsvImportMsg("No valid rows found. Check column names."); return; }
+        const existing=new Set(disputeClients.map(c=>`${c.firstName}${c.lastName}`.toLowerCase()));
+        const newOnes=mapped.filter(r=>!existing.has(`${r.firstName}${r.lastName}`.toLowerCase()));
+        saveDisputeClients([...disputeClients,...newOnes]);
         setCsvImportMsg(`Imported ${newOnes.length} new client${newOnes.length!==1?"s":""} (${mapped.length-newOnes.length} skipped as duplicates)`);
-        setTimeout(() => setCsvImportMsg(""), 5000);
-      } catch(err) { setCsvImportMsg("Error reading CSV: " + err.message); }
+        setTimeout(()=>setCsvImportMsg(""),5000);
+      } catch(err) { setCsvImportMsg("Error: "+err.message); }
     };
     reader.readAsText(file);
   }
 
-  function shiftMonth(dir) {
-    let m=viewMonth+dir,y=viewYear;
-    if (m<0){m=11;y--;} if (m>11){m=0;y++;}
-    setViewMonth(m); setViewYear(y);
-  }
+  function shiftMonth(dir) { let m=viewMonth+dir,y=viewYear; if(m<0){m=11;y--;} if(m>11){m=0;y++;} setViewMonth(m); setViewYear(y); }
 
   function downloadCSV(filename,rows,headers) {
     const escape=v=>{const s=v===null||v===undefined?"":String(v); return s.includes(",")||s.includes('"')||s.includes("\n")?`"${s.replace(/"/g,'""')}"`:`${s}`;};
@@ -285,13 +282,11 @@ export default function ClientTracker() {
     const a=document.createElement("a"); a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
   }
   function exportPayments() {
-    const headers=["Name","Company","Monthly Amount","Total Quoted","Due Day","Notes","Status","Amount Paid This Month","Total Paid All Time","Remaining Balance"];
-    const rows=allRows.map(c=>{const rem=getRemaining(c); return{"Name":c.name,"Company":c.company||"","Monthly Amount":c.monthlyAmount||"","Total Quoted":c.quotedTotal||"","Due Day":c.dueDay||"","Notes":c.notes||"","Status":c.status,"Amount Paid This Month":c.amountPaid||0,"Total Paid All Time":totalPaidAllTime(c.id),"Remaining Balance":rem!==null?rem:""};});
+    const headers=["Name","Company","Partner","Monthly Amount","Total Quoted","Due Day","Notes","Status","Amount Paid This Month","Total Paid All Time","Remaining Balance"];
+    const rows=allRows.map(c=>{const rem=getRemaining(c); const pname=partners.find(p=>p.id===c.partnerId)?.name||""; return{"Name":c.name,"Company":c.company||"","Partner":pname,"Monthly Amount":c.monthlyAmount||"","Total Quoted":c.quotedTotal||"","Due Day":c.dueDay||"","Notes":c.notes||"","Status":c.status,"Amount Paid This Month":c.amountPaid||0,"Total Paid All Time":totalPaidAllTime(c.id),"Remaining Balance":rem!==null?rem:""};});
     downloadCSV(`payments_${MONTHS[viewMonth]}_${viewYear}.csv`,rows,headers);
   }
-  function exportPIF() {
-    downloadCSV(`pay_in_full_clients.csv`,sortedPIF.map(c=>({"Name":c.name,"Company":c.company||"","Amount":c.amount||"","Date Paid":c.paidDate||"","Notes":c.notes||""})),["Name","Company","Amount","Date Paid","Notes"]);
-  }
+  function exportPIF() { downloadCSV(`pay_in_full_clients.csv`,sortedPIF.map(c=>({"Name":c.name,"Company":c.company||"","Amount":c.amount||"","Date Paid":c.paidDate||"","Notes":c.notes||""})),["Name","Company","Amount","Date Paid","Notes"]); }
   function exportQuotes() {
     const headers=["Month","Year","Name","Company","Amount","Notes"]; const rows=[];
     Object.entries(quotes).forEach(([key,qs])=>{const parts=key.replace("quotes_","").split("_"); (qs||[]).forEach(q=>rows.push({"Month":MONTHS[parseInt(parts[1])]||parts[1],"Year":parts[0],"Name":q.name,"Company":q.company||"","Amount":q.amount||"","Notes":q.notes||""}));});
@@ -299,8 +294,8 @@ export default function ClientTracker() {
     downloadCSV(`quotes_all_time.csv`,rows,headers);
   }
   function exportDisputes() {
-    const headers=["First Name","Last Name","Processing Date","Days Since","Status","Credit Monitoring","Service","Notes"];
-    const rows=disputeClients.map(c=>{const d=getDaysSince(c.processingDate); return{"First Name":c.firstName,"Last Name":c.lastName,"Processing Date":c.processingDate||"","Days Since":d!==null?d:"","Status":getDisputeStatus(d),"Credit Monitoring":c.creditMonitoring||"","Service":c.service||"","Notes":c.notes||""};});
+    const headers=["First Name","Last Name","Partner","Processing Date","Days Since","Status","Credit Monitoring","Service","Notes"];
+    const rows=disputeClients.map(c=>{const d=getDaysSince(c.processingDate); const pname=partners.find(p=>p.id===c.partnerId)?.name||""; return{"First Name":c.firstName,"Last Name":c.lastName,"Partner":pname,"Processing Date":c.processingDate||"","Days Since":d!==null?d:"","Status":getDisputeStatus(d),"Credit Monitoring":c.creditMonitoring||"","Service":c.service||"","Notes":c.notes||""};});
     downloadCSV(`dispute_tracker.csv`,rows,headers);
   }
 
@@ -311,7 +306,12 @@ export default function ClientTracker() {
     }).sort((a,b)=>(parseInt(a.dueDay)||99)-(parseInt(b.dueDay)||99));
   },[clients,payments,viewMonth,viewYear]);
 
-  const filtered=filterStatus==="all"?allRows:allRows.filter(c=>c.status===filterStatus);
+  const filtered = useMemo(()=>{
+    let rows=filterStatus==="all"?allRows:allRows.filter(c=>c.status===filterStatus);
+    if (searchQuery) rows=rows.filter(c=>c.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    return rows;
+  },[allRows,filterStatus,searchQuery]);
+
   const counts={paid:0,due:0,missed:0,pending:0};
   allRows.forEach(c=>{counts[c.status]=(counts[c.status]||0)+1;});
 
@@ -331,8 +331,7 @@ export default function ClientTracker() {
 
   const disputeWithStatus = useMemo(()=>{
     return disputeClients.map(c=>{
-      const days=getDaysSince(c.processingDate);
-      const status=getDisputeStatus(days);
+      const days=getDaysSince(c.processingDate); const status=getDisputeStatus(days);
       return {...c,daysSince:days,disputeStatus:status};
     }).sort((a,b)=>{
       const order={alarm:0,overdue:1,warning:2,ok:3,none:4};
@@ -341,11 +340,25 @@ export default function ClientTracker() {
     });
   },[disputeClients]);
 
-  const filteredDisputes = disputeFilter==="all"?disputeWithStatus:disputeWithStatus.filter(c=>c.disputeStatus===disputeFilter);
-  const alarmClients     = disputeWithStatus.filter(c=>c.disputeStatus==="alarm");
-  const hasAlarm         = alarmClients.length>0 && !alarmDismissed;
-  const dispCounts       = {alarm:0,overdue:0,warning:0,ok:0,none:0};
+  const filteredDisputes = useMemo(()=>{
+    let rows=disputeFilter==="all"?disputeWithStatus:disputeWithStatus.filter(c=>c.disputeStatus===disputeFilter);
+    if (disputeSearch) rows=rows.filter(c=>`${c.firstName} ${c.lastName}`.toLowerCase().includes(disputeSearch.toLowerCase()));
+    return rows;
+  },[disputeWithStatus,disputeFilter,disputeSearch]);
+
+  const alarmClients = disputeWithStatus.filter(c=>c.disputeStatus==="alarm");
+  const hasAlarm     = alarmClients.length>0 && !alarmDismissed;
+  const dispCounts   = {alarm:0,overdue:0,warning:0,ok:0,none:0};
   disputeWithStatus.forEach(c=>{dispCounts[c.disputeStatus]=(dispCounts[c.disputeStatus]||0)+1;});
+
+  const partnerStats = useMemo(()=>{
+    return partners.map(p=>{
+      const payClients  = clients.filter(c=>c.partnerId===p.id);
+      const dispClients = disputeClients.filter(c=>c.partnerId===p.id);
+      const totalRevenue= payClients.reduce((s,c)=>s+(parseFloat(c.quotedTotal)||0),0);
+      return {...p, payClients, dispClients, totalClients:payClients.length+dispClients.length, totalRevenue};
+    });
+  },[partners,clients,disputeClients]);
 
   if (loading) return (
     <div style={{fontFamily:"'DM Mono',monospace",background:"#080c10",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#334155"}}>
@@ -377,9 +390,13 @@ export default function ClientTracker() {
         @keyframes flashRed{0%,100%{background:#1a0000}50%{background:#3a0000}}
         @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
         .alarm-banner{animation:flashRed 1s infinite}
-        .csv-drop{border:2px dashed #334155;border-radius:8px;padding:24px;text-align:center;transition:all 0.2s;cursor:pointer}
+        .csv-drop{border:2px dashed #334155;border-radius:8px;padding:20px;text-align:center;transition:all 0.2s;cursor:pointer}
         .csv-drop.dragging{border-color:#7c3aed;background:#1a0a2e}
         .csv-drop:hover{border-color:#475569}
+        .search-bar{background:#0f172a;border:1px solid #1e293b;color:#e2e8f0;border-radius:4px;padding:8px 12px;font-size:12px;outline:none;width:280px;font-family:inherit}
+        .search-bar:focus{border-color:#3b82f6}
+        .partner-card{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px 20px;cursor:pointer;transition:all 0.15s}
+        .partner-card:hover{border-color:#fbbf24;background:#0f1200}
       `}</style>
 
       {hasAlarm && (
@@ -401,7 +418,7 @@ export default function ClientTracker() {
       <div style={{background:"#0a0e14",borderBottom:"1px solid #1e293b",padding:`${hasAlarm?"60px":"16px"} 24px 16px`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div>
           <div style={{fontFamily:"'Bebas Neue'",fontSize:28,letterSpacing:"0.12em"}}>CREDITRACK</div>
-          <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.15em",marginTop:-2}}>PAYMENTS · DISPUTES · QUOTES</div>
+          <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.15em",marginTop:-2}}>PAYMENTS · DISPUTES · PARTNERS · QUOTES</div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <button className="btn" onClick={()=>shiftMonth(-1)} style={{background:"#1e293b",color:"#94a3b8",padding:"6px 12px",borderRadius:4}}>◀</button>
@@ -414,14 +431,15 @@ export default function ClientTracker() {
       </div>
 
       <div style={{display:"flex",borderBottom:"1px solid #1e293b",background:"#0a0e14",overflowX:"auto"}}>
-        {[["payments","PAYMENTS"],["disputes","DISPUTES"+(dispCounts.alarm>0?" 🚨":"")],["completed","COMPLETED"],["pif","PAY IN FULL"],["quotes","QUOTES"]].map(([k,label])=>(
-          <button key={k} className="btn" onClick={()=>setTab(k)} style={{background:"none",color:tab===k?"#3b82f6":"#64748b",padding:"12px 16px",borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",fontSize:11,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>{label}</button>
+        {[["payments","PAYMENTS"],["disputes","DISPUTES"+(dispCounts.alarm>0?" 🚨":"")],["partners","PARTNERS"],["completed","COMPLETED"],["pif","PAY IN FULL"],["quotes","QUOTES"]].map(([k,label])=>(
+          <button key={k} className="btn" onClick={()=>{setTab(k);setSelectedPartner(null);}} style={{background:"none",color:tab===k?"#3b82f6":"#64748b",padding:"12px 16px",borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",fontSize:11,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>{label}</button>
         ))}
         <div style={{flex:1}}/>
         {tab==="payments" && <><button className="btn" onClick={exportPayments} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddClient(true)} style={{background:"#1d4ed8",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD CLIENT</button></>}
         {tab==="disputes" && <><button className="btn" onClick={exportDisputes} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddDispute(true)} style={{background:"#7c3aed",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD CLIENT</button></>}
-        {tab==="pif"      && <><button className="btn" onClick={exportPIF}      style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddPIF(true)}   style={{background:"#065f46",color:"#34d399",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD PIF</button></>}
-        {tab==="quotes"   && <><button className="btn" onClick={exportQuotes}   style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddQuote(true)}  style={{background:"#1d4ed8",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD QUOTE</button></>}
+        {tab==="partners" && <button className="btn" onClick={()=>setShowAddPartner(true)} style={{background:"#b45309",color:"#fbbf24",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD PARTNER</button>}
+        {tab==="pif"      && <><button className="btn" onClick={exportPIF} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddPIF(true)} style={{background:"#065f46",color:"#34d399",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD PIF</button></>}
+        {tab==="quotes"   && <><button className="btn" onClick={exportQuotes} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddQuote(true)} style={{background:"#1d4ed8",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD QUOTE</button></>}
       </div>
 
       {tab==="payments" && (
@@ -438,47 +456,26 @@ export default function ClientTracker() {
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
               <div style={{background:"#0a0f1a",border:"1px solid #1e3a5f",borderRadius:6,padding:"14px 18px"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
-                  <div>
-                    <div style={{fontSize:9,color:"#475569",letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:4}}>Projected Monthly Revenue</div>
-                    <div style={{fontFamily:"'Bebas Neue'",fontSize:30,color:"#60a5fa",lineHeight:1}}>{fmt(projectedMonthlyRevenue)}</div>
-                    <div style={{fontSize:10,color:"#334155",marginTop:3}}>{allRows.length} active client{allRows.length!==1?"s":""} this month</div>
-                  </div>
-                  <div style={{textAlign:"right"}}>
-                    <div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:4}}>Collected {MONTHS[viewMonth]}</div>
-                    <div style={{fontSize:18,fontFamily:"'Bebas Neue'",color:collectionPct===100?"#22c55e":"#facc15"}}>{fmt(collectedThisMonth)}</div>
-                  </div>
+                  <div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:4}}>Projected Monthly Revenue</div><div style={{fontFamily:"'Bebas Neue'",fontSize:30,color:"#60a5fa",lineHeight:1}}>{fmt(projectedMonthlyRevenue)}</div><div style={{fontSize:10,color:"#334155",marginTop:3}}>{allRows.length} active client{allRows.length!==1?"s":""} this month</div></div>
+                  <div style={{textAlign:"right"}}><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:4}}>Collected {MONTHS[viewMonth]}</div><div style={{fontSize:18,fontFamily:"'Bebas Neue'",color:collectionPct===100?"#22c55e":"#facc15"}}>{fmt(collectedThisMonth)}</div></div>
                 </div>
-                <div style={{height:5,background:"#1e293b",borderRadius:3,overflow:"hidden"}}>
-                  <div style={{height:"100%",borderRadius:3,transition:"width 0.5s ease",width:`${collectionPct}%`,background:collectionPct===100?"#22c55e":collectionPct>60?"#3b82f6":"#facc15"}}/>
-                </div>
-                <div style={{display:"flex",justifyContent:"space-between",marginTop:4}}>
-                  <div style={{fontSize:9,color:"#334155"}}>{collectionPct.toFixed(0)}% collected</div>
-                  <div style={{fontSize:9,color:"#334155"}}>{fmt(Math.max(0,projectedMonthlyRevenue-collectedThisMonth))} outstanding</div>
-                </div>
+                <div style={{height:5,background:"#1e293b",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.5s ease",width:`${collectionPct}%`,background:collectionPct===100?"#22c55e":collectionPct>60?"#3b82f6":"#facc15"}}/></div>
+                <div style={{display:"flex",justifyContent:"space-between",marginTop:4}}><div style={{fontSize:9,color:"#334155"}}>{collectionPct.toFixed(0)}% collected</div><div style={{fontSize:9,color:"#334155"}}>{fmt(Math.max(0,projectedMonthlyRevenue-collectedThisMonth))} outstanding</div></div>
               </div>
               <div style={{background:"#0a0f0a",border:"1px solid #1a3a1a",borderRadius:6,padding:"14px 18px"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
-                  <div>
-                    <div style={{fontSize:9,color:"#475569",letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:4}}>Total Remaining to Collect</div>
-                    <div style={{fontFamily:"'Bebas Neue'",fontSize:30,color:"#34d399",lineHeight:1}}>{fmt(projectedTotalRemaining)}</div>
-                    <div style={{fontSize:10,color:"#334155",marginTop:3}}>across active payment plans</div>
-                  </div>
-                  <div style={{textAlign:"right"}}>
-                    <div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:4}}>Total Quoted</div>
-                    <div style={{fontSize:18,fontFamily:"'Bebas Neue'",color:"#64748b"}}>{fmt(allRows.reduce((s,c)=>s+(parseFloat(c.quotedTotal)||0),0))}</div>
-                  </div>
+                  <div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:4}}>Total Remaining to Collect</div><div style={{fontFamily:"'Bebas Neue'",fontSize:30,color:"#34d399",lineHeight:1}}>{fmt(projectedTotalRemaining)}</div><div style={{fontSize:10,color:"#334155",marginTop:3}}>across active payment plans</div></div>
+                  <div style={{textAlign:"right"}}><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:4}}>Total Quoted</div><div style={{fontSize:18,fontFamily:"'Bebas Neue'",color:"#64748b"}}>{fmt(allRows.reduce((s,c)=>s+(parseFloat(c.quotedTotal)||0),0))}</div></div>
                 </div>
                 {(()=>{const tq=allRows.reduce((s,c)=>s+(parseFloat(c.quotedTotal)||0),0);const tp=allRows.reduce((s,c)=>s+totalPaidAllTime(c.id),0);const pp=tq>0?Math.min(100,(tp/tq)*100):0;return(<><div style={{height:5,background:"#1e293b",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.5s ease",width:`${pp}%`,background:"#22c55e"}}/></div><div style={{display:"flex",justifyContent:"space-between",marginTop:4}}><div style={{fontSize:9,color:"#334155"}}>{pp.toFixed(0)}% paid down</div><div style={{fontSize:9,color:"#334155"}}>{fmt(tp)} collected total</div></div></>);})()} 
               </div>
             </div>
           )}
-          {filterStatus!=="all" && (
-            <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
-              <span style={{fontSize:11,color:"#64748b"}}>Showing:</span>
-              <span style={{padding:"1px 8px",borderRadius:20,fontSize:9,letterSpacing:"0.08em",textTransform:"uppercase",background:STATUS_CONFIG[filterStatus].bg,color:STATUS_CONFIG[filterStatus].color,border:`1px solid ${STATUS_CONFIG[filterStatus].color}40`}}>{filterStatus}</span>
-              <button className="btn" onClick={()=>setFilterStatus("all")} style={{background:"none",color:"#64748b",padding:"0 4px"}}>clear</button>
-            </div>
-          )}
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+            <input className="search-bar" placeholder="🔍  Search by name..." value={searchQuery} onChange={e=>setSearchQuery(e.target.value)}/>
+            {searchQuery&&<button className="btn" onClick={()=>setSearchQuery("")} style={{background:"none",color:"#64748b",padding:"0 4px"}}>✕ clear</button>}
+            {filterStatus!=="all"&&<><span style={{fontSize:11,color:"#64748b"}}>Status:</span><span style={{padding:"1px 8px",borderRadius:20,fontSize:9,letterSpacing:"0.08em",textTransform:"uppercase",background:STATUS_CONFIG[filterStatus].bg,color:STATUS_CONFIG[filterStatus].color,border:`1px solid ${STATUS_CONFIG[filterStatus].color}40`}}>{filterStatus}</span><button className="btn" onClick={()=>setFilterStatus("all")} style={{background:"none",color:"#64748b",padding:"0 4px"}}>✕</button></>}
+          </div>
           {clients.length===0?(
             <div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO CLIENTS YET — ADD YOUR FIRST ONE</div></div>
           ):(
@@ -493,11 +490,18 @@ export default function ClientTracker() {
                 const dueDay=parseInt(c.dueDay)||null; const isPast=isCurrentMonth&&dueDay&&TODAY_DAY>dueDay; const isToday=isCurrentMonth&&dueDay&&TODAY_DAY===dueDay;
                 const dueBadge=dueDay?(<div style={{fontSize:11,color:isMissed?"#ef4444":isToday?"#facc15":isPast?"#f87171":"#64748b",fontWeight:isToday?600:400}}>{isToday?"TODAY":`${MONTHS[viewMonth]} ${dueDay}`}</div>):null;
                 const numMonths=(parseFloat(c.quotedTotal)&&parseFloat(c.monthlyAmount))?Math.round(parseFloat(c.quotedTotal)/parseFloat(c.monthlyAmount)):null;
+                const partnerName=partners.find(p=>p.id===c.partnerId)?.name||"";
                 return (
                   <div key={c.id} style={{borderTop:i===0?"none":"1px solid #1e293b20"}}>
                     <div style={{display:"grid",gridTemplateColumns:"20px 1.2fr 1fr 80px 80px 90px 80px 195px 28px",padding:"11px 14px",alignItems:"center",background:isMissed?(i%2===0?"#130808":"#150909"):(i%2===0?"#080c10":"#090d13"),gap:8,cursor:"pointer",borderLeft:isMissed?"3px solid #ef444460":"3px solid transparent"}} onClick={()=>setExpandedId(isExp?null:c.id)}>
                       <div style={{color:"#334155",fontSize:11,userSelect:"none"}}>{isExp?"▾":"▸"}</div>
-                      <div><div style={{fontSize:13,fontWeight:500,color:isMissed?"#fca5a5":"#e2e8f0"}}>{c.name}</div>{numMonths&&<div style={{fontSize:9,color:"#334155",marginTop:1}}>{numMonths} month plan</div>}</div>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:500,color:isMissed?"#fca5a5":"#e2e8f0"}}>{c.name}</div>
+                        <div style={{display:"flex",gap:6,marginTop:2,flexWrap:"wrap"}}>
+                          {numMonths&&<div style={{fontSize:9,color:"#334155"}}>{numMonths}mo</div>}
+                          {partnerName&&<div style={{fontSize:9,color:"#fbbf24",background:"#1a1200",padding:"1px 6px",borderRadius:10,border:"1px solid #fbbf2430"}}>↗ {partnerName}</div>}
+                        </div>
+                      </div>
                       <div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div>
                       <div style={{fontSize:12,color:"#94a3b8"}}>{c.monthlyAmount?fmt(c.monthlyAmount):"—"}</div>
                       <div style={{fontSize:12,color:"#e2e8f0"}}>{c.quotedTotal?fmt(c.quotedTotal):"—"}</div>
@@ -536,6 +540,7 @@ export default function ClientTracker() {
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>QUOTED TOTAL</div><input type="number" placeholder="e.g. 6000" defaultValue={c.quotedTotal} onBlur={e=>updateField(c.id,"quotedTotal",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>MONTHLY AMT</div><input type="number" placeholder="e.g. 1500" defaultValue={c.monthlyAmount} onBlur={e=>updateField(c.id,"monthlyAmount",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>DUE DAY</div><input type="number" min="1" max="31" placeholder="e.g. 15" defaultValue={c.dueDay} onBlur={e=>updateField(c.id,"dueDay",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
+                            <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>PARTNER</div><select defaultValue={c.partnerId||""} onBlur={e=>updateField(c.id,"partnerId",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>NOTES</div><input placeholder="Notes" defaultValue={c.notes} onBlur={e=>updateField(c.id,"notes",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                           </div>
                         </div>
@@ -551,14 +556,7 @@ export default function ClientTracker() {
 
       {tab==="disputes" && (
         <div style={{padding:"20px 24px"}}>
-          <div
-            className={`csv-drop${csvDragging?" dragging":""}`}
-            style={{marginBottom:20}}
-            onDragOver={e=>{e.preventDefault();setCsvDragging(true);}}
-            onDragLeave={()=>setCsvDragging(false)}
-            onDrop={e=>{e.preventDefault();setCsvDragging(false);handleCSVImport(e.dataTransfer.files[0]);}}
-            onClick={()=>csvFileRef.current?.click()}
-          >
+          <div className={`csv-drop${csvDragging?" dragging":""}`} style={{marginBottom:20}} onDragOver={e=>{e.preventDefault();setCsvDragging(true);}} onDragLeave={()=>setCsvDragging(false)} onDrop={e=>{e.preventDefault();setCsvDragging(false);handleCSVImport(e.dataTransfer.files[0]);}} onClick={()=>csvFileRef.current?.click()}>
             <input ref={csvFileRef} type="file" accept=".csv" style={{display:"none"}} onChange={e=>handleCSVImport(e.target.files[0])}/>
             <div style={{fontSize:24,marginBottom:6}}>📂</div>
             <div style={{fontSize:12,color:"#64748b",letterSpacing:"0.08em"}}>DROP YOUR CREDIT REPAIR CLOUD CSV HERE</div>
@@ -566,18 +564,16 @@ export default function ClientTracker() {
             {csvImportMsg&&<div style={{marginTop:10,fontSize:11,color:csvImportMsg.includes("Import")?"#22c55e":"#f87171",fontWeight:500}}>{csvImportMsg}</div>}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:20}}>
-            {[
-              {key:"all",    label:"Total",    color:"#94a3b8", count:disputeClients.length},
-              {key:"alarm",  label:"OVERDUE",  color:"#ef4444", count:dispCounts.alarm||0},
-              {key:"overdue",label:"Due Soon",  color:"#f97316", count:dispCounts.overdue||0},
-              {key:"warning",label:"Warning",   color:"#facc15", count:dispCounts.warning||0},
-              {key:"ok",     label:"On Track",  color:"#22c55e", count:dispCounts.ok||0},
-            ].map(item=>(
+            {[{key:"all",label:"Total",color:"#94a3b8",count:disputeClients.length},{key:"alarm",label:"OVERDUE",color:"#ef4444",count:dispCounts.alarm||0},{key:"overdue",label:"Due Soon",color:"#f97316",count:dispCounts.overdue||0},{key:"warning",label:"Warning",color:"#facc15",count:dispCounts.warning||0},{key:"ok",label:"On Track",color:"#22c55e",count:dispCounts.ok||0}].map(item=>(
               <button key={item.key} className="btn" onClick={()=>setDisputeFilter(disputeFilter===item.key&&item.key!=="all"?"all":item.key)} style={{background:disputeFilter===item.key?"#1e293b":"#0f172a",border:`1px solid ${disputeFilter===item.key?item.color:"#1e293b"}`,borderRadius:6,padding:"10px 14px",textAlign:"left"}}>
                 <div style={{fontSize:22,fontFamily:"'Bebas Neue'",color:item.color}}>{item.count}</div>
                 <div style={{fontSize:9,color:"#64748b",letterSpacing:"0.1em",marginTop:2}}>{item.label.toUpperCase()}</div>
               </button>
             ))}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+            <input className="search-bar" placeholder="🔍  Search by name..." value={disputeSearch} onChange={e=>setDisputeSearch(e.target.value)}/>
+            {disputeSearch&&<button className="btn" onClick={()=>setDisputeSearch("")} style={{background:"none",color:"#64748b",padding:"0 4px"}}>✕ clear</button>}
           </div>
           {disputeClients.length===0?(
             <div style={{textAlign:"center",padding:"40px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO DISPUTE CLIENTS YET — IMPORT CSV OR ADD MANUALLY</div></div>
@@ -592,11 +588,17 @@ export default function ClientTracker() {
                 const statusColor=isAlarm?"#ef4444":isOver?"#f97316":isWarn?"#facc15":"#22c55e";
                 const statusLabel=isAlarm?"OVERDUE":isOver?"DUE SOON":isWarn?"WARNING":"ON TRACK";
                 const rowBg=isAlarm?(i%2===0?"#1a0000":"#1e0000"):isOver?(i%2===0?"#1a0800":"#1e0a00"):(i%2===0?"#080c10":"#090d13");
+                const partnerName=partners.find(p=>p.id===c.partnerId)?.name||"";
                 return (
                   <div key={c.id} style={{borderTop:i===0?"none":"1px solid #1e293b20"}}>
                     <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px",padding:"11px 14px",alignItems:"center",background:rowBg,gap:8,cursor:"pointer",borderLeft:`3px solid ${statusColor}60`,animation:isAlarm?"flashRed 0.8s infinite":""}} onClick={()=>setExpandedDispId(isExp?null:c.id)}>
                       <div style={{color:"#334155",fontSize:11,userSelect:"none"}}>{isExp?"▾":"▸"}</div>
-                      <div><div style={{fontSize:13,fontWeight:500,color:isAlarm?"#fca5a5":"#e2e8f0"}}>{c.firstName} {c.lastName}</div>{c.notes&&<div style={{fontSize:9,color:"#475569",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:160}}>{c.notes}</div>}</div>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:500,color:isAlarm?"#fca5a5":"#e2e8f0"}}>{c.firstName} {c.lastName}</div>
+                        <div style={{display:"flex",gap:6,marginTop:2}}>
+                          {partnerName&&<div style={{fontSize:9,color:"#fbbf24",background:"#1a1200",padding:"1px 6px",borderRadius:10,border:"1px solid #fbbf2430"}}>↗ {partnerName}</div>}
+                        </div>
+                      </div>
                       <div style={{fontSize:12,color:"#64748b"}}>{c.processingDate||"—"}</div>
                       <div style={{fontSize:14,fontWeight:600,color:statusColor}}>{c.daysSince!==null?c.daysSince:"—"}</div>
                       <div><span style={{padding:"2px 8px",borderRadius:20,fontSize:9,letterSpacing:"0.08em",background:isAlarm?"#200000":isOver?"#1a0800":isWarn?"#1a1600":"#052e16",color:statusColor,border:`1px solid ${statusColor}40`}}>{statusLabel}</span></div>
@@ -619,7 +621,7 @@ export default function ClientTracker() {
                           <div style={{display:"flex",flexDirection:"column",gap:5}}>
                             <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:"#64748b"}}>Monitoring</span><span>{c.creditMonitoring||"—"}</span></div>
                             <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:"#64748b"}}>Service</span><span>{c.service||"—"}</span></div>
-                            <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:"#64748b"}}>Added</span><span>{c.createdAt?new Date(c.createdAt).toLocaleDateString():"—"}</span></div>
+                            <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:"#64748b"}}>Partner</span><span style={{color:"#fbbf24"}}>{partnerName||"—"}</span></div>
                           </div>
                         </div>
                         <div>
@@ -630,6 +632,7 @@ export default function ClientTracker() {
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>PROCESSING DATE</div><input type="date" defaultValue={c.processingDate} onBlur={e=>updateDisputeField(c.id,"processingDate",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>MONITORING</div><select defaultValue={c.creditMonitoring} onBlur={e=>updateDisputeField(c.id,"creditMonitoring",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>SERVICE</div><select defaultValue={c.service} onBlur={e=>updateDisputeField(c.id,"service",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+                            <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>PARTNER</div><select defaultValue={c.partnerId||""} onBlur={e=>updateDisputeField(c.id,"partnerId",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>NOTES</div><input defaultValue={c.notes} onBlur={e=>updateDisputeField(c.id,"notes",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                           </div>
                         </div>
@@ -643,6 +646,72 @@ export default function ClientTracker() {
         </div>
       )}
 
+      {tab==="partners" && !selectedPartner && (
+        <div style={{padding:"20px 24px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:24}}>
+            <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#fbbf24"}}>{partners.length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>TOTAL PARTNERS</div></div>
+            <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#60a5fa"}}>{clients.filter(c=>c.partnerId).length+disputeClients.filter(c=>c.partnerId).length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>REFERRED CLIENTS</div></div>
+            <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px",display:"flex",alignItems:"center"}}><div style={{fontSize:10,color:"#64748b",lineHeight:1.6}}>Click any partner card to see all their referred clients.</div></div>
+          </div>
+          {partners.length===0?(
+            <div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO PARTNERS YET — ADD YOUR FIRST ONE</div></div>
+          ):(
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:16}}>
+              {partnerStats.map(p=>(
+                <div key={p.id} className="partner-card" onClick={()=>setSelectedPartner(p.id)}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+                    <div>
+                      <div style={{fontFamily:"'Bebas Neue'",fontSize:20,letterSpacing:"0.08em",color:"#fbbf24"}}>{p.name}</div>
+                      <div style={{fontSize:10,color:"#475569",marginTop:2}}>Added {new Date(p.createdAt).toLocaleDateString()}</div>
+                    </div>
+                    <button className="btn" onClick={e=>{e.stopPropagation();removePartner(p.id);}} style={{background:"none",color:"#334155",padding:"4px",fontSize:12}}>✕</button>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                    <div style={{background:"#080c10",borderRadius:4,padding:"8px 10px"}}><div style={{fontSize:18,fontFamily:"'Bebas Neue'",color:"#60a5fa"}}>{p.payClients.length}</div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.08em"}}>PAYMENT</div></div>
+                    <div style={{background:"#080c10",borderRadius:4,padding:"8px 10px"}}><div style={{fontSize:18,fontFamily:"'Bebas Neue'",color:"#a78bfa"}}>{p.dispClients.length}</div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.08em"}}>DISPUTE</div></div>
+                  </div>
+                  {p.totalRevenue>0&&<div style={{marginTop:8,fontSize:11,color:"#64748b"}}>Total quoted: <span style={{color:"#22c55e"}}>{fmt(p.totalRevenue)}</span></div>}
+                  <div style={{marginTop:10,fontSize:10,color:"#fbbf24",letterSpacing:"0.05em"}}>VIEW ALL CLIENTS →</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab==="partners" && selectedPartner && (()=>{
+        const partner=partnerStats.find(p=>p.id===selectedPartner);
+        if (!partner) return null;
+        return (
+          <div style={{padding:"20px 24px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
+              <button className="btn" onClick={()=>setSelectedPartner(null)} style={{background:"#1e293b",color:"#94a3b8",padding:"6px 14px",borderRadius:4}}>← BACK</button>
+              <div style={{fontFamily:"'Bebas Neue'",fontSize:24,letterSpacing:"0.1em",color:"#fbbf24"}}>{partner.name}</div>
+              <div style={{fontSize:11,color:"#64748b"}}>{partner.totalClients} client{partner.totalClients!==1?"s":""} referred</div>
+            </div>
+            {partner.payClients.length>0&&(
+              <div style={{marginBottom:24}}>
+                <div style={{fontSize:11,color:"#475569",letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:10}}>Payment Plan Clients ({partner.payClients.length})</div>
+                <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 100px 100px 120px",padding:"8px 14px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8}}><div>Name</div><div>Company</div><div>Monthly</div><div>Quoted</div><div>Remaining</div></div>
+                  {partner.payClients.map((c,i)=>{const rem=getRemaining(c); return(<div key={c.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr 100px 100px 120px",padding:"11px 14px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#090d13",gap:8}}><div style={{fontSize:13,fontWeight:500}}>{c.name}</div><div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div><div style={{fontSize:12,color:"#94a3b8"}}>{c.monthlyAmount?fmt(c.monthlyAmount):"—"}</div><div style={{fontSize:12,color:"#e2e8f0"}}>{c.quotedTotal?fmt(c.quotedTotal):"—"}</div><div style={{fontSize:12,color:rem===0?"#22c55e":rem!==null?"#f87171":"#334155"}}>{rem===0?"✓ CLEAR":rem!==null?fmt(rem):"—"}</div></div>);})}
+                </div>
+              </div>
+            )}
+            {partner.dispClients.length>0&&(
+              <div>
+                <div style={{fontSize:11,color:"#475569",letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:10}}>Dispute Clients ({partner.dispClients.length})</div>
+                <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 110px 80px 120px 140px",padding:"8px 14px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8}}><div>Name</div><div>Last Processed</div><div>Days</div><div>Status</div><div>Service</div></div>
+                  {partner.dispClients.map((c,i)=>{const days=getDaysSince(c.processingDate);const st=getDisputeStatus(days);const sc=st==="alarm"?"#ef4444":st==="overdue"?"#f97316":st==="warning"?"#facc15":"#22c55e";const sl=st==="alarm"?"OVERDUE":st==="overdue"?"DUE SOON":st==="warning"?"WARNING":"ON TRACK";return(<div key={c.id} style={{display:"grid",gridTemplateColumns:"1fr 110px 80px 120px 140px",padding:"11px 14px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#090d13",gap:8}}><div style={{fontSize:13,fontWeight:500}}>{c.firstName} {c.lastName}</div><div style={{fontSize:12,color:"#64748b"}}>{c.processingDate||"—"}</div><div style={{fontSize:13,fontWeight:600,color:sc}}>{days!==null?days:"—"}</div><div><span style={{padding:"2px 8px",borderRadius:20,fontSize:9,background:st==="alarm"?"#200000":st==="overdue"?"#1a0800":st==="warning"?"#1a1600":"#052e16",color:sc,border:`1px solid ${sc}40`}}>{sl}</span></div><div style={{fontSize:11,color:"#94a3b8"}}>{c.service||"—"}</div></div>);})}
+                </div>
+              </div>
+            )}
+            {partner.totalClients===0&&<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO CLIENTS ASSIGNED TO {partner.name.toUpperCase()} YET</div></div>}
+          </div>
+        );
+      })()}
+
       {tab==="completed" && (
         <div style={{padding:"20px 24px"}}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:20}}>
@@ -652,20 +721,8 @@ export default function ClientTracker() {
           </div>
           {completedClients.length===0?(<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO COMPLETED PLANS YET</div></div>):(
             <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
-              <div style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 100px 110px 36px 36px",padding:"8px 16px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8}}>
-                <div>Client</div><div>Company</div><div>Quoted</div><div>Collected</div><div>Completed</div><div/><div/>
-              </div>
-              {sortedCompleted.map((c,i)=>(
-                <div key={c.id} style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 100px 110px 36px 36px",padding:"12px 16px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#0a0e14",gap:8}}>
-                  <div><div style={{fontSize:13,fontWeight:500}}>{c.name}</div><div style={{display:"inline-block",marginTop:3,padding:"1px 7px",borderRadius:20,fontSize:9,letterSpacing:"0.08em",background:"#052e16",color:"#22c55e",border:"1px solid #22c55e40"}}>COMPLETED</div></div>
-                  <div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div>
-                  <div style={{fontSize:12,color:"#94a3b8"}}>{c.quotedTotal?fmt(c.quotedTotal):"—"}</div>
-                  <div style={{fontSize:12,color:"#22c55e",fontWeight:500}}>{fmt(c.totalCollected)}</div>
-                  <div style={{fontSize:11,color:"#64748b"}}>{c.completedAt?new Date(c.completedAt).toLocaleDateString():"—"}</div>
-                  <button className="btn" title="Restore" onClick={()=>restoreCompleted(c.id)} style={{background:"none",color:"#3b82f6",padding:"4px",fontSize:12}}>↩</button>
-                  <button className="btn" onClick={()=>removeCompleted(c.id)} style={{background:"none",color:"#334155",padding:"4px",fontSize:13}}>✕</button>
-                </div>
-              ))}
+              <div style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 100px 110px 36px 36px",padding:"8px 16px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8}}><div>Client</div><div>Company</div><div>Quoted</div><div>Collected</div><div>Completed</div><div/><div/></div>
+              {sortedCompleted.map((c,i)=>(<div key={c.id} style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 100px 110px 36px 36px",padding:"12px 16px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#0a0e14",gap:8}}><div><div style={{fontSize:13,fontWeight:500}}>{c.name}</div><div style={{display:"inline-block",marginTop:3,padding:"1px 7px",borderRadius:20,fontSize:9,background:"#052e16",color:"#22c55e",border:"1px solid #22c55e40"}}>COMPLETED</div></div><div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div><div style={{fontSize:12,color:"#94a3b8"}}>{c.quotedTotal?fmt(c.quotedTotal):"—"}</div><div style={{fontSize:12,color:"#22c55e",fontWeight:500}}>{fmt(c.totalCollected)}</div><div style={{fontSize:11,color:"#64748b"}}>{c.completedAt?new Date(c.completedAt).toLocaleDateString():"—"}</div><button className="btn" title="Restore" onClick={()=>restoreCompleted(c.id)} style={{background:"none",color:"#3b82f6",padding:"4px",fontSize:12}}>↩</button><button className="btn" onClick={()=>removeCompleted(c.id)} style={{background:"none",color:"#334155",padding:"4px",fontSize:13}}>✕</button></div>))}
             </div>
           )}
         </div>
@@ -681,7 +738,7 @@ export default function ClientTracker() {
           {pifClients.length===0?(<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO PAY-IN-FULL CLIENTS YET</div></div>):(
             <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
               <div style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 110px 1fr 36px",padding:"8px 16px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8}}><div>Client</div><div>Company</div><div>Amount</div><div>Paid Date</div><div>Notes</div><div/></div>
-              {sortedPIF.map((c,i)=>(<div key={c.id} style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 110px 1fr 36px",padding:"12px 16px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#0a0e14",gap:8}}><div><div style={{fontSize:13,fontWeight:500}}>{c.name}</div><div style={{display:"inline-block",marginTop:3,padding:"1px 7px",borderRadius:20,fontSize:9,letterSpacing:"0.08em",background:"#052e16",color:"#22c55e",border:"1px solid #22c55e40"}}>PAID IN FULL</div></div><div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div><div style={{fontSize:12,color:"#22c55e",fontWeight:500}}>{c.amount?fmt(c.amount):"—"}</div><div style={{fontSize:12,color:"#64748b"}}>{c.paidDate||"—"}</div><div style={{fontSize:12,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.notes||"—"}</div><button className="btn" onClick={()=>removePIF(c.id)} style={{background:"none",color:"#334155",padding:"4px",fontSize:14}}>✕</button></div>))}
+              {sortedPIF.map((c,i)=>(<div key={c.id} style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 110px 1fr 36px",padding:"12px 16px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#0a0e14",gap:8}}><div><div style={{fontSize:13,fontWeight:500}}>{c.name}</div><div style={{display:"inline-block",marginTop:3,padding:"1px 7px",borderRadius:20,fontSize:9,background:"#052e16",color:"#22c55e",border:"1px solid #22c55e40"}}>PAID IN FULL</div></div><div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div><div style={{fontSize:12,color:"#22c55e",fontWeight:500}}>{c.amount?fmt(c.amount):"—"}</div><div style={{fontSize:12,color:"#64748b"}}>{c.paidDate||"—"}</div><div style={{fontSize:12,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.notes||"—"}</div><button className="btn" onClick={()=>removePIF(c.id)} style={{background:"none",color:"#334155",padding:"4px",fontSize:14}}>✕</button></div>))}
             </div>
           )}
         </div>
@@ -702,8 +759,9 @@ export default function ClientTracker() {
         </div>
       )}
 
-      {showAddClient&&(<div className="modal-overlay" onClick={()=>setShowAddClient(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:20}}>ADD PAYMENT CLIENT</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newClient.name} onChange={e=>setNewClient({...newClient,name:e.target.value})}/><input placeholder="Company" value={newClient.company} onChange={e=>setNewClient({...newClient,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>MONTHLY PMT</div><input placeholder="e.g. 1500" type="number" value={newClient.monthlyAmount} onChange={e=>setNewClient({...newClient,monthlyAmount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>TOTAL QUOTED</div><input placeholder="e.g. 6000" type="number" value={newClient.quotedTotal} onChange={e=>setNewClient({...newClient,quotedTotal:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DUE DAY</div><input placeholder="e.g. 15" type="number" min="1" max="31" value={newClient.dueDay} onChange={e=>setNewClient({...newClient,dueDay:e.target.value})}/></div></div><textarea placeholder="Notes" rows={2} value={newClient.notes} onChange={e=>setNewClient({...newClient,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{fontSize:10,color:"#475569",marginTop:10,lineHeight:1.6}}>Contract length auto-calculated from Total Quoted / Monthly Payment.</div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addClient} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddClient(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
-      {showAddDispute&&(<div className="modal-overlay" onClick={()=>setShowAddDispute(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#a78bfa"}}>ADD DISPUTE CLIENT</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>35-DAY PROCESSING CYCLE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>FIRST NAME *</div><input placeholder="First" value={newDispute.firstName} onChange={e=>setNewDispute({...newDispute,firstName:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST NAME</div><input placeholder="Last" value={newDispute.lastName} onChange={e=>setNewDispute({...newDispute,lastName:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PROCESSING DATE</div><input type="date" value={newDispute.processingDate} onChange={e=>setNewDispute({...newDispute,processingDate:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>CREDIT MONITORING SERVICE</div><select value={newDispute.creditMonitoring} onChange={e=>setNewDispute({...newDispute,creditMonitoring:e.target.value})}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newDispute.service} onChange={e=>setNewDispute({...newDispute,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><textarea placeholder="Notes" rows={2} value={newDispute.notes} onChange={e=>setNewDispute({...newDispute,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addDisputeClient} style={{background:"#7c3aed",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddDispute(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
+      {showAddClient&&(<div className="modal-overlay" onClick={()=>setShowAddClient(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:20}}>ADD PAYMENT CLIENT</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newClient.name} onChange={e=>setNewClient({...newClient,name:e.target.value})}/><input placeholder="Company" value={newClient.company} onChange={e=>setNewClient({...newClient,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>MONTHLY PMT</div><input placeholder="e.g. 1500" type="number" value={newClient.monthlyAmount} onChange={e=>setNewClient({...newClient,monthlyAmount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>TOTAL QUOTED</div><input placeholder="e.g. 6000" type="number" value={newClient.quotedTotal} onChange={e=>setNewClient({...newClient,quotedTotal:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DUE DAY</div><input placeholder="e.g. 15" type="number" min="1" max="31" value={newClient.dueDay} onChange={e=>setNewClient({...newClient,dueDay:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PARTNER (optional)</div><select value={newClient.partnerId||""} onChange={e=>setNewClient({...newClient,partnerId:e.target.value})}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><textarea placeholder="Notes" rows={2} value={newClient.notes} onChange={e=>setNewClient({...newClient,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{fontSize:10,color:"#475569",marginTop:10,lineHeight:1.6}}>Contract length auto-calculated from Total Quoted / Monthly Payment.</div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addClient} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddClient(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
+      {showAddDispute&&(<div className="modal-overlay" onClick={()=>setShowAddDispute(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#a78bfa"}}>ADD DISPUTE CLIENT</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>35-DAY PROCESSING CYCLE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>FIRST NAME *</div><input placeholder="First" value={newDispute.firstName} onChange={e=>setNewDispute({...newDispute,firstName:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST NAME</div><input placeholder="Last" value={newDispute.lastName} onChange={e=>setNewDispute({...newDispute,lastName:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PROCESSING DATE</div><input type="date" value={newDispute.processingDate} onChange={e=>setNewDispute({...newDispute,processingDate:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>CREDIT MONITORING</div><select value={newDispute.creditMonitoring} onChange={e=>setNewDispute({...newDispute,creditMonitoring:e.target.value})}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newDispute.service} onChange={e=>setNewDispute({...newDispute,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PARTNER (optional)</div><select value={newDispute.partnerId||""} onChange={e=>setNewDispute({...newDispute,partnerId:e.target.value})}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><textarea placeholder="Notes" rows={2} value={newDispute.notes} onChange={e=>setNewDispute({...newDispute,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addDisputeClient} style={{background:"#7c3aed",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddDispute(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
+      {showAddPartner&&(<div className="modal-overlay" onClick={()=>setShowAddPartner(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#fbbf24"}}>ADD PARTNER</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>REFERRAL PARTNER</div><input placeholder="Partner name *" value={newPartnerName} onChange={e=>setNewPartnerName(e.target.value)} style={{marginBottom:16}}/><div style={{display:"flex",gap:8}}><button className="btn" onClick={addPartner} style={{background:"#b45309",color:"#fbbf24",padding:"10px 20px",borderRadius:4,flex:1}}>ADD PARTNER</button><button className="btn" onClick={()=>setShowAddPartner(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
       {showAddPIF&&(<div className="modal-overlay" onClick={()=>setShowAddPIF(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#34d399"}}>ADD PAY IN FULL</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>ONE-TIME PAYMENT — DOES NOT RECUR</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newPIF.name} onChange={e=>setNewPIF({...newPIF,name:e.target.value})}/><input placeholder="Company" value={newPIF.company} onChange={e=>setNewPIF({...newPIF,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>AMOUNT PAID</div><input placeholder="e.g. 5000" type="number" value={newPIF.amount} onChange={e=>setNewPIF({...newPIF,amount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DATE PAID</div><input type="date" value={newPIF.paidDate} onChange={e=>setNewPIF({...newPIF,paidDate:e.target.value})}/></div></div><textarea placeholder="Notes / scope" rows={2} value={newPIF.notes} onChange={e=>setNewPIF({...newPIF,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addPIF} style={{background:"#065f46",color:"#34d399",padding:"10px 20px",borderRadius:4,flex:1}}>SAVE PIF CLIENT</button><button className="btn" onClick={()=>setShowAddPIF(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
       {showAddQuote&&(<div className="modal-overlay" onClick={()=>setShowAddQuote(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4}}>NEW QUOTE</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em",marginBottom:16}}>{MONTHS[viewMonth].toUpperCase()} {viewYear}</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Contact name *" value={newQuote.name} onChange={e=>setNewQuote({...newQuote,name:e.target.value})}/><input placeholder="Company" value={newQuote.company} onChange={e=>setNewQuote({...newQuote,company:e.target.value})}/><input placeholder="Quote amount (e.g. 2500)" type="number" value={newQuote.amount} onChange={e=>setNewQuote({...newQuote,amount:e.target.value})}/><textarea placeholder="What was quoted / scope notes" rows={3} value={newQuote.notes} onChange={e=>setNewQuote({...newQuote,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addQuote} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>SAVE QUOTE</button><button className="btn" onClick={()=>setShowAddQuote(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
     </div>
