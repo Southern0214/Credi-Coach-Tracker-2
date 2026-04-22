@@ -93,6 +93,7 @@ function mapCRCRow(row) {
     creditMonitoring: row["credit monitoring service"] || row["creditmonitoring"] || find("monitor") || "",
     service:          row["service"] || find("service","type","program") || "",
     notes:            row["notes"] || find("note","comment") || "",
+    email:            row["email"] || find("email") || "",
     partnerId:        "",
     createdAt:        new Date().toISOString(),
   };
@@ -116,6 +117,7 @@ export default function ClientTracker() {
   const [partners,         setPartners]         = useState([]);
   const [payments,         setPayments]         = useState({});
   const [quotes,           setQuotes]           = useState({});
+  const [emailsSent,       setEmailsSent]       = useState({});
   const [loading,          setLoading]          = useState(true);
   const [tab,              setTab]              = useState("payments");
   const [viewMonth,        setViewMonth]        = useState(THIS_MONTH);
@@ -142,7 +144,7 @@ export default function ClientTracker() {
   const blankClient  = { name:"", company:"", monthlyAmount:"", quotedTotal:"", dueDay:"", notes:"", partnerId:"" };
   const blankPIF     = { name:"", company:"", amount:"", paidDate:"", notes:"" };
   const blankQuote   = { name:"", company:"", amount:"", notes:"" };
-  const blankDispute = { firstName:"", lastName:"", processingDate:"", creditMonitoring:"", service:"", notes:"", partnerId:"" };
+  const blankDispute = { firstName:"", lastName:"", processingDate:"", creditMonitoring:"", service:"", notes:"", email:"", partnerId:"" };
 
   const [newClient,  setNewClient]  = useState(blankClient);
   const [newPIF,     setNewPIF]     = useState(blankPIF);
@@ -153,17 +155,18 @@ export default function ClientTracker() {
     async function load() {
       setLoading(true);
       try {
-        const [c,p,q,pif,comp,disp,part] = await Promise.all([
+        const [c,p,q,pif,comp,disp,part,esent] = await Promise.all([
           dbGet("clients"),dbGet("payments"),dbGet("quotes"),dbGet("pifClients"),
-          dbGet("completedClients"),dbGet("disputeClients"),dbGet("partners"),
+          dbGet("completedClients"),dbGet("disputeClients"),dbGet("partners"),dbGet("emailsSent"),
         ]);
-        if (c)    setClients(c);
-        if (p)    setPayments(p);
-        if (q)    setQuotes(q);
-        if (pif)  setPifClients(pif);
-        if (comp) setCompletedClients(comp);
-        if (disp) setDisputeClients(disp);
-        if (part) setPartners(part);
+        if (c)     setClients(c);
+        if (p)     setPayments(p);
+        if (q)     setQuotes(q);
+        if (pif)   setPifClients(pif);
+        if (comp)  setCompletedClients(comp);
+        if (disp)  setDisputeClients(disp);
+        if (part)  setPartners(part);
+        if (esent) setEmailsSent(esent);
       } catch(e) { console.error("Load error",e); }
       setLoading(false);
     }
@@ -177,6 +180,56 @@ export default function ClientTracker() {
   const savePartners         = useCallback(async d => { setPartners(d);         await dbSet("partners",         d); },[]);
   const savePayments         = useCallback(async d => { setPayments(d);         await dbSet("payments",         d); },[]);
   const saveQuotes           = useCallback(async d => { setQuotes(d);           await dbSet("quotes",           d); },[]);
+  const saveEmailsSent       = useCallback(async d => { setEmailsSent(d);       await dbSet("emailsSent",       d); },[]);
+
+  async function triggerEmail(type, params) {
+    try {
+      await fetch("/api/send-email", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({type,...params}),
+      });
+    } catch(e) { console.error("Email error",e); }
+  }
+
+  function markEmailSent(clientId, emailType, current) {
+    const updated = {...current,[`${clientId}_${emailType}`]:new Date().toISOString()};
+    saveEmailsSent(updated);
+    return updated;
+  }
+  function wasEmailSent(clientId, emailType, current) { return !!(current||emailsSent)[`${clientId}_${emailType}`]; }
+
+  useEffect(() => {
+    if (loading || disputeClients.length===0) return;
+    let current = {...emailsSent};
+    disputeClients.forEach(c => {
+      const name = `${c.firstName} ${c.lastName}`;
+      const days = getDaysSince(c.processingDate);
+      const addedDays = getDaysSince(c.createdAt);
+      for (let week=1; week<=6; week++) {
+        if (addedDays >= week*7 && !wasEmailSent(c.id,`week${week}`,current)) {
+          if (c.email) triggerEmail("client_week",{clientName:name,clientEmail:c.email,weekNumber:week});
+          current = markEmailSent(c.id,`week${week}`,current);
+        }
+      }
+      if (days!==null && days>=21 && !wasEmailSent(c.id,"day21",current)) {
+        if (c.email) triggerEmail("client_day21",{clientName:name,clientEmail:c.email});
+        current = markEmailSent(c.id,"day21",current);
+      }
+      if (days!==null && days>=35 && !wasEmailSent(c.id,"client_day35",current)) {
+        if (c.email) triggerEmail("client_day35",{clientName:name,clientEmail:c.email});
+        current = markEmailSent(c.id,"client_day35",current);
+      }
+      if (days!==null && days>=30 && !wasEmailSent(c.id,"team_day30",current)) {
+        triggerEmail("team_day30",{clientName:name});
+        current = markEmailSent(c.id,"team_day30",current);
+      }
+      if (days!==null && days>=35 && !wasEmailSent(c.id,"team_day35",current)) {
+        triggerEmail("team_day35",{clientName:name});
+        current = markEmailSent(c.id,"team_day35",current);
+      }
+    });
+  },[disputeClients,loading]);
 
   function getPayData(cid) { return payments[getPKey(cid,viewMonth,viewYear)] || { status:"pending", amountPaid:0 }; }
 
@@ -187,10 +240,14 @@ export default function ClientTracker() {
       const monthly=parseFloat(client.monthlyAmount);
       const updated={...payments,[key]:{status:"paid",amountPaid:monthly}};
       savePayments(updated);
+      triggerEmail("team_paid",{clientName:client.name,amount:fmt(monthly)});
       const total=parseFloat(client.quotedTotal)||0;
       const allPaid=Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
-      if (total>0 && allPaid>=total) { saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]); saveClients(clients.filter(c=>c.id!==cid)); }
-    } else { savePayments({...payments,[key]:{...ex,status}}); }
+      if (total>0&&allPaid>=total) { saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]); saveClients(clients.filter(c=>c.id!==cid)); }
+    } else {
+      savePayments({...payments,[key]:{...ex,status}});
+      if (status==="missed" && client) triggerEmail("team_missed",{clientName:client.name,amount:client.monthlyAmount?fmt(client.monthlyAmount):""});
+    }
   }
 
   function logPayment(cid, amount) {
@@ -200,9 +257,10 @@ export default function ClientTracker() {
     savePayments(updated); setPayInput(p=>({...p,[cid]:""}));
     const client=clients.find(c=>c.id===cid);
     if (client) {
+      triggerEmail("team_paid",{clientName:client.name,amount:fmt(newPaid)});
       const total=parseFloat(client.quotedTotal)||0;
       const allPaid=Object.entries(updated).filter(([k])=>k.startsWith(`pay_${cid}_`)).reduce((s,[,v])=>s+(parseFloat(v.amountPaid)||0),0);
-      if (total>0 && allPaid>=total) { saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]); saveClients(clients.filter(c=>c.id!==cid)); }
+      if (total>0&&allPaid>=total) { saveCompletedClients([...completedClients,{...client,completedAt:new Date().toISOString(),totalCollected:allPaid}]); saveClients(clients.filter(c=>c.id!==cid)); }
     }
   }
 
@@ -283,19 +341,19 @@ export default function ClientTracker() {
   }
   function exportPayments() {
     const headers=["Name","Company","Partner","Monthly Amount","Total Quoted","Due Day","Notes","Status","Amount Paid This Month","Total Paid All Time","Remaining Balance"];
-    const rows=allRows.map(c=>{const rem=getRemaining(c); const pname=partners.find(p=>p.id===c.partnerId)?.name||""; return{"Name":c.name,"Company":c.company||"","Partner":pname,"Monthly Amount":c.monthlyAmount||"","Total Quoted":c.quotedTotal||"","Due Day":c.dueDay||"","Notes":c.notes||"","Status":c.status,"Amount Paid This Month":c.amountPaid||0,"Total Paid All Time":totalPaidAllTime(c.id),"Remaining Balance":rem!==null?rem:""};});
+    const rows=allRows.map(c=>{const rem=getRemaining(c);const pname=partners.find(p=>p.id===c.partnerId)?.name||"";return{"Name":c.name,"Company":c.company||"","Partner":pname,"Monthly Amount":c.monthlyAmount||"","Total Quoted":c.quotedTotal||"","Due Day":c.dueDay||"","Notes":c.notes||"","Status":c.status,"Amount Paid This Month":c.amountPaid||0,"Total Paid All Time":totalPaidAllTime(c.id),"Remaining Balance":rem!==null?rem:""};});
     downloadCSV(`payments_${MONTHS[viewMonth]}_${viewYear}.csv`,rows,headers);
   }
   function exportPIF() { downloadCSV(`pay_in_full_clients.csv`,sortedPIF.map(c=>({"Name":c.name,"Company":c.company||"","Amount":c.amount||"","Date Paid":c.paidDate||"","Notes":c.notes||""})),["Name","Company","Amount","Date Paid","Notes"]); }
   function exportQuotes() {
     const headers=["Month","Year","Name","Company","Amount","Notes"]; const rows=[];
-    Object.entries(quotes).forEach(([key,qs])=>{const parts=key.replace("quotes_","").split("_"); (qs||[]).forEach(q=>rows.push({"Month":MONTHS[parseInt(parts[1])]||parts[1],"Year":parts[0],"Name":q.name,"Company":q.company||"","Amount":q.amount||"","Notes":q.notes||""}));});
+    Object.entries(quotes).forEach(([key,qs])=>{const parts=key.replace("quotes_","").split("_");(qs||[]).forEach(q=>rows.push({"Month":MONTHS[parseInt(parts[1])]||parts[1],"Year":parts[0],"Name":q.name,"Company":q.company||"","Amount":q.amount||"","Notes":q.notes||""}));});
     rows.sort((a,b)=>`${b.Year}${b.Month}`.localeCompare(`${a.Year}${a.Month}`));
     downloadCSV(`quotes_all_time.csv`,rows,headers);
   }
   function exportDisputes() {
-    const headers=["First Name","Last Name","Partner","Processing Date","Days Since","Status","Credit Monitoring","Service","Notes"];
-    const rows=disputeClients.map(c=>{const d=getDaysSince(c.processingDate); const pname=partners.find(p=>p.id===c.partnerId)?.name||""; return{"First Name":c.firstName,"Last Name":c.lastName,"Partner":pname,"Processing Date":c.processingDate||"","Days Since":d!==null?d:"","Status":getDisputeStatus(d),"Credit Monitoring":c.creditMonitoring||"","Service":c.service||"","Notes":c.notes||""};});
+    const headers=["First Name","Last Name","Partner","Email","Processing Date","Days Since","Status","Credit Monitoring","Service","Notes"];
+    const rows=disputeClients.map(c=>{const d=getDaysSince(c.processingDate);const pname=partners.find(p=>p.id===c.partnerId)?.name||"";return{"First Name":c.firstName,"Last Name":c.lastName,"Partner":pname,"Email":c.email||"","Processing Date":c.processingDate||"","Days Since":d!==null?d:"","Status":getDisputeStatus(d),"Credit Monitoring":c.creditMonitoring||"","Service":c.service||"","Notes":c.notes||""};});
     downloadCSV(`dispute_tracker.csv`,rows,headers);
   }
 
@@ -318,14 +376,13 @@ export default function ClientTracker() {
   const monthQuotes    = quotes[getQKey(viewMonth,viewYear)]||[];
   const totalQuoted    = monthQuotes.reduce((s,q)=>s+(parseFloat(q.amount)||0),0);
   const isCurrentMonth = viewMonth===THIS_MONTH && viewYear===THIS_YEAR;
-
   const projectedMonthlyRevenue = allRows.reduce((s,c)=>s+(parseFloat(c.monthlyAmount)||0),0);
-  const projectedTotalRemaining = allRows.reduce((s,c)=>{const r=getRemaining(c); return s+(r!==null?r:0);},0);
-  const collectedThisMonth      = allRows.reduce((s,c)=>{const d=getPayData(c.id); return s+(parseFloat(d.amountPaid)||0);},0);
+  const projectedTotalRemaining = allRows.reduce((s,c)=>{const r=getRemaining(c);return s+(r!==null?r:0);},0);
+  const collectedThisMonth      = allRows.reduce((s,c)=>{const d=getPayData(c.id);return s+(parseFloat(d.amountPaid)||0);},0);
   const collectionPct           = projectedMonthlyRevenue>0?Math.min(100,(collectedThisMonth/projectedMonthlyRevenue)*100):0;
 
-  const sortedPIF       = [...pifClients].sort((a,b)=>new Date(b.paidDate||0)-new Date(a.paidDate||0));
-  const pifTotal        = pifClients.reduce((s,c)=>s+(parseFloat(c.amount)||0),0);
+  const sortedPIF       = [...pifClients].filter(c=>{const d=new Date(c.paidDate||c.createdAt);return d.getMonth()===viewMonth&&d.getFullYear()===viewYear;}).sort((a,b)=>new Date(b.paidDate||0)-new Date(a.paidDate||0));
+  const pifTotal        = sortedPIF.reduce((s,c)=>s+(parseFloat(c.amount)||0),0);
   const sortedCompleted = [...completedClients].sort((a,b)=>new Date(b.completedAt||0)-new Date(a.completedAt||0));
   const completedTotal  = completedClients.reduce((s,c)=>s+(parseFloat(c.totalCollected)||0),0);
 
@@ -356,7 +413,7 @@ export default function ClientTracker() {
       const payClients  = clients.filter(c=>c.partnerId===p.id);
       const dispClients = disputeClients.filter(c=>c.partnerId===p.id);
       const totalRevenue= payClients.reduce((s,c)=>s+(parseFloat(c.quotedTotal)||0),0);
-      return {...p, payClients, dispClients, totalClients:payClients.length+dispClients.length, totalRevenue};
+      return {...p,payClients,dispClients,totalClients:payClients.length+dispClients.length,totalRevenue};
     });
   },[partners,clients,disputeClients]);
 
@@ -399,7 +456,7 @@ export default function ClientTracker() {
         .partner-card:hover{border-color:#fbbf24;background:#0f1200}
       `}</style>
 
-      {hasAlarm && (
+      {hasAlarm&&(
         <div className="alarm-banner" style={{position:"fixed",top:0,left:0,right:0,zIndex:200,padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:"2px solid #ef4444"}}>
           <div style={{display:"flex",alignItems:"center",gap:12}}>
             <div style={{fontSize:20,animation:"shake 0.5s infinite"}}>🚨</div>
@@ -442,7 +499,7 @@ export default function ClientTracker() {
         {tab==="quotes"   && <><button className="btn" onClick={exportQuotes} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 14px",margin:"6px 0 6px 12px",borderRadius:4}}>↓ CSV</button><button className="btn" onClick={()=>setShowAddQuote(true)} style={{background:"#1d4ed8",color:"#fff",padding:"10px 18px",margin:"6px 12px",borderRadius:4}}>+ ADD QUOTE</button></>}
       </div>
 
-      {tab==="payments" && (
+      {tab==="payments"&&(
         <div style={{padding:"20px 24px"}}>
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
             {Object.entries(STATUS_CONFIG).map(([k,v])=>(
@@ -452,7 +509,7 @@ export default function ClientTracker() {
               </button>
             ))}
           </div>
-          {clients.length>0 && (
+          {clients.length>0&&(
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
               <div style={{background:"#0a0f1a",border:"1px solid #1e3a5f",borderRadius:6,padding:"14px 18px"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
@@ -476,22 +533,20 @@ export default function ClientTracker() {
             {searchQuery&&<button className="btn" onClick={()=>setSearchQuery("")} style={{background:"none",color:"#64748b",padding:"0 4px"}}>✕ clear</button>}
             {filterStatus!=="all"&&<><span style={{fontSize:11,color:"#64748b"}}>Status:</span><span style={{padding:"1px 8px",borderRadius:20,fontSize:9,letterSpacing:"0.08em",textTransform:"uppercase",background:STATUS_CONFIG[filterStatus].bg,color:STATUS_CONFIG[filterStatus].color,border:`1px solid ${STATUS_CONFIG[filterStatus].color}40`}}>{filterStatus}</span><button className="btn" onClick={()=>setFilterStatus("all")} style={{background:"none",color:"#64748b",padding:"0 4px"}}>✕</button></>}
           </div>
-          {clients.length===0?(
-            <div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO CLIENTS YET — ADD YOUR FIRST ONE</div></div>
-          ):(
+          {clients.length===0?(<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO CLIENTS YET — ADD YOUR FIRST ONE</div></div>):(
             <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
               <div style={{display:"grid",gridTemplateColumns:"20px 1.2fr 1fr 80px 80px 90px 80px 195px 28px",padding:"8px 14px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8,alignItems:"center"}}>
                 <div/><div>Client</div><div>Company</div><div>Monthly</div><div>Quoted</div><div>Remaining</div><div>Due Day</div><div>Status</div><div/>
               </div>
               {filtered.map((c,i)=>{
-                const allTimePaid=totalPaidAllTime(c.id); const remaining=getRemaining(c);
-                const quoted=parseFloat(c.quotedTotal)||0; const pct=quoted>0?Math.min(100,(allTimePaid/quoted)*100):0;
-                const isExp=expandedId===c.id; const pData=getPayData(c.id); const isMissed=c.status==="missed";
-                const dueDay=parseInt(c.dueDay)||null; const isPast=isCurrentMonth&&dueDay&&TODAY_DAY>dueDay; const isToday=isCurrentMonth&&dueDay&&TODAY_DAY===dueDay;
+                const allTimePaid=totalPaidAllTime(c.id);const remaining=getRemaining(c);
+                const quoted=parseFloat(c.quotedTotal)||0;const pct=quoted>0?Math.min(100,(allTimePaid/quoted)*100):0;
+                const isExp=expandedId===c.id;const pData=getPayData(c.id);const isMissed=c.status==="missed";
+                const dueDay=parseInt(c.dueDay)||null;const isPast=isCurrentMonth&&dueDay&&TODAY_DAY>dueDay;const isToday=isCurrentMonth&&dueDay&&TODAY_DAY===dueDay;
                 const dueBadge=dueDay?(<div style={{fontSize:11,color:isMissed?"#ef4444":isToday?"#facc15":isPast?"#f87171":"#64748b",fontWeight:isToday?600:400}}>{isToday?"TODAY":`${MONTHS[viewMonth]} ${dueDay}`}</div>):null;
                 const numMonths=(parseFloat(c.quotedTotal)&&parseFloat(c.monthlyAmount))?Math.round(parseFloat(c.quotedTotal)/parseFloat(c.monthlyAmount)):null;
                 const partnerName=partners.find(p=>p.id===c.partnerId)?.name||"";
-                return (
+                return(
                   <div key={c.id} style={{borderTop:i===0?"none":"1px solid #1e293b20"}}>
                     <div style={{display:"grid",gridTemplateColumns:"20px 1.2fr 1fr 80px 80px 90px 80px 195px 28px",padding:"11px 14px",alignItems:"center",background:isMissed?(i%2===0?"#130808":"#150909"):(i%2===0?"#080c10":"#090d13"),gap:8,cursor:"pointer",borderLeft:isMissed?"3px solid #ef444460":"3px solid transparent"}} onClick={()=>setExpandedId(isExp?null:c.id)}>
                       <div style={{color:"#334155",fontSize:11,userSelect:"none"}}>{isExp?"▾":"▸"}</div>
@@ -554,7 +609,7 @@ export default function ClientTracker() {
         </div>
       )}
 
-      {tab==="disputes" && (
+      {tab==="disputes"&&(
         <div style={{padding:"20px 24px"}}>
           <div className={`csv-drop${csvDragging?" dragging":""}`} style={{marginBottom:20}} onDragOver={e=>{e.preventDefault();setCsvDragging(true);}} onDragLeave={()=>setCsvDragging(false)} onDrop={e=>{e.preventDefault();setCsvDragging(false);handleCSVImport(e.dataTransfer.files[0]);}} onClick={()=>csvFileRef.current?.click()}>
             <input ref={csvFileRef} type="file" accept=".csv" style={{display:"none"}} onChange={e=>handleCSVImport(e.target.files[0])}/>
@@ -575,21 +630,19 @@ export default function ClientTracker() {
             <input className="search-bar" placeholder="🔍  Search by name..." value={disputeSearch} onChange={e=>setDisputeSearch(e.target.value)}/>
             {disputeSearch&&<button className="btn" onClick={()=>setDisputeSearch("")} style={{background:"none",color:"#64748b",padding:"0 4px"}}>✕ clear</button>}
           </div>
-          {disputeClients.length===0?(
-            <div style={{textAlign:"center",padding:"40px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO DISPUTE CLIENTS YET — IMPORT CSV OR ADD MANUALLY</div></div>
-          ):(
+          {disputeClients.length===0?(<div style={{textAlign:"center",padding:"40px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO DISPUTE CLIENTS YET — IMPORT CSV OR ADD MANUALLY</div></div>):(
             <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
               <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px",padding:"8px 14px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8,alignItems:"center"}}>
                 <div/><div>Client</div><div>Last Processed</div><div>Days</div><div>Status</div><div>Monitoring</div><div>Service</div><div/>
               </div>
               {filteredDisputes.map((c,i)=>{
                 const isExp=expandedDispId===c.id;
-                const isAlarm=c.disputeStatus==="alarm"; const isOver=c.disputeStatus==="overdue"; const isWarn=c.disputeStatus==="warning";
+                const isAlarm=c.disputeStatus==="alarm";const isOver=c.disputeStatus==="overdue";const isWarn=c.disputeStatus==="warning";
                 const statusColor=isAlarm?"#ef4444":isOver?"#f97316":isWarn?"#facc15":"#22c55e";
                 const statusLabel=isAlarm?"OVERDUE":isOver?"DUE SOON":isWarn?"WARNING":"ON TRACK";
                 const rowBg=isAlarm?(i%2===0?"#1a0000":"#1e0000"):isOver?(i%2===0?"#1a0800":"#1e0a00"):(i%2===0?"#080c10":"#090d13");
                 const partnerName=partners.find(p=>p.id===c.partnerId)?.name||"";
-                return (
+                return(
                   <div key={c.id} style={{borderTop:i===0?"none":"1px solid #1e293b20"}}>
                     <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px",padding:"11px 14px",alignItems:"center",background:rowBg,gap:8,cursor:"pointer",borderLeft:`3px solid ${statusColor}60`,animation:isAlarm?"flashRed 0.8s infinite":""}} onClick={()=>setExpandedDispId(isExp?null:c.id)}>
                       <div style={{color:"#334155",fontSize:11,userSelect:"none"}}>{isExp?"▾":"▸"}</div>
@@ -597,6 +650,7 @@ export default function ClientTracker() {
                         <div style={{fontSize:13,fontWeight:500,color:isAlarm?"#fca5a5":"#e2e8f0"}}>{c.firstName} {c.lastName}</div>
                         <div style={{display:"flex",gap:6,marginTop:2}}>
                           {partnerName&&<div style={{fontSize:9,color:"#fbbf24",background:"#1a1200",padding:"1px 6px",borderRadius:10,border:"1px solid #fbbf2430"}}>↗ {partnerName}</div>}
+                          {c.email&&<div style={{fontSize:9,color:"#475569"}}>✉</div>}
                         </div>
                       </div>
                       <div style={{fontSize:12,color:"#64748b"}}>{c.processingDate||"—"}</div>
@@ -622,6 +676,7 @@ export default function ClientTracker() {
                             <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:"#64748b"}}>Monitoring</span><span>{c.creditMonitoring||"—"}</span></div>
                             <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:"#64748b"}}>Service</span><span>{c.service||"—"}</span></div>
                             <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:"#64748b"}}>Partner</span><span style={{color:"#fbbf24"}}>{partnerName||"—"}</span></div>
+                            <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}><span style={{color:"#64748b"}}>Email</span><span style={{color:"#64748b",fontSize:10}}>{c.email||"—"}</span></div>
                           </div>
                         </div>
                         <div>
@@ -629,6 +684,7 @@ export default function ClientTracker() {
                           <div style={{display:"flex",flexDirection:"column",gap:6}}>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>FIRST NAME</div><input defaultValue={c.firstName} onBlur={e=>updateDisputeField(c.id,"firstName",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>LAST NAME</div><input defaultValue={c.lastName} onBlur={e=>updateDisputeField(c.id,"lastName",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
+                            <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>EMAIL</div><input placeholder="client@email.com" defaultValue={c.email||""} onBlur={e=>updateDisputeField(c.id,"email",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>PROCESSING DATE</div><input type="date" defaultValue={c.processingDate} onBlur={e=>updateDisputeField(c.id,"processingDate",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>MONITORING</div><select defaultValue={c.creditMonitoring} onBlur={e=>updateDisputeField(c.id,"creditMonitoring",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
                             <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>SERVICE</div><select defaultValue={c.service} onBlur={e=>updateDisputeField(c.id,"service",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
@@ -646,24 +702,19 @@ export default function ClientTracker() {
         </div>
       )}
 
-      {tab==="partners" && !selectedPartner && (
+      {tab==="partners"&&!selectedPartner&&(
         <div style={{padding:"20px 24px"}}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:24}}>
             <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#fbbf24"}}>{partners.length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>TOTAL PARTNERS</div></div>
             <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#60a5fa"}}>{clients.filter(c=>c.partnerId).length+disputeClients.filter(c=>c.partnerId).length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>REFERRED CLIENTS</div></div>
             <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px",display:"flex",alignItems:"center"}}><div style={{fontSize:10,color:"#64748b",lineHeight:1.6}}>Click any partner card to see all their referred clients.</div></div>
           </div>
-          {partners.length===0?(
-            <div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO PARTNERS YET — ADD YOUR FIRST ONE</div></div>
-          ):(
+          {partners.length===0?(<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO PARTNERS YET — ADD YOUR FIRST ONE</div></div>):(
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:16}}>
               {partnerStats.map(p=>(
                 <div key={p.id} className="partner-card" onClick={()=>setSelectedPartner(p.id)}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
-                    <div>
-                      <div style={{fontFamily:"'Bebas Neue'",fontSize:20,letterSpacing:"0.08em",color:"#fbbf24"}}>{p.name}</div>
-                      <div style={{fontSize:10,color:"#475569",marginTop:2}}>Added {new Date(p.createdAt).toLocaleDateString()}</div>
-                    </div>
+                    <div><div style={{fontFamily:"'Bebas Neue'",fontSize:20,letterSpacing:"0.08em",color:"#fbbf24"}}>{p.name}</div><div style={{fontSize:10,color:"#475569",marginTop:2}}>Added {new Date(p.createdAt).toLocaleDateString()}</div></div>
                     <button className="btn" onClick={e=>{e.stopPropagation();removePartner(p.id);}} style={{background:"none",color:"#334155",padding:"4px",fontSize:12}}>✕</button>
                   </div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
@@ -679,10 +730,10 @@ export default function ClientTracker() {
         </div>
       )}
 
-      {tab==="partners" && selectedPartner && (()=>{
+      {tab==="partners"&&selectedPartner&&(()=>{
         const partner=partnerStats.find(p=>p.id===selectedPartner);
         if (!partner) return null;
-        return (
+        return(
           <div style={{padding:"20px 24px"}}>
             <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
               <button className="btn" onClick={()=>setSelectedPartner(null)} style={{background:"#1e293b",color:"#94a3b8",padding:"6px 14px",borderRadius:4}}>← BACK</button>
@@ -694,7 +745,7 @@ export default function ClientTracker() {
                 <div style={{fontSize:11,color:"#475569",letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:10}}>Payment Plan Clients ({partner.payClients.length})</div>
                 <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 100px 100px 120px",padding:"8px 14px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8}}><div>Name</div><div>Company</div><div>Monthly</div><div>Quoted</div><div>Remaining</div></div>
-                  {partner.payClients.map((c,i)=>{const rem=getRemaining(c); return(<div key={c.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr 100px 100px 120px",padding:"11px 14px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#090d13",gap:8}}><div style={{fontSize:13,fontWeight:500}}>{c.name}</div><div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div><div style={{fontSize:12,color:"#94a3b8"}}>{c.monthlyAmount?fmt(c.monthlyAmount):"—"}</div><div style={{fontSize:12,color:"#e2e8f0"}}>{c.quotedTotal?fmt(c.quotedTotal):"—"}</div><div style={{fontSize:12,color:rem===0?"#22c55e":rem!==null?"#f87171":"#334155"}}>{rem===0?"✓ CLEAR":rem!==null?fmt(rem):"—"}</div></div>);})}
+                  {partner.payClients.map((c,i)=>{const rem=getRemaining(c);return(<div key={c.id} style={{display:"grid",gridTemplateColumns:"1fr 1fr 100px 100px 120px",padding:"11px 14px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#090d13",gap:8}}><div style={{fontSize:13,fontWeight:500}}>{c.name}</div><div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div><div style={{fontSize:12,color:"#94a3b8"}}>{c.monthlyAmount?fmt(c.monthlyAmount):"—"}</div><div style={{fontSize:12,color:"#e2e8f0"}}>{c.quotedTotal?fmt(c.quotedTotal):"—"}</div><div style={{fontSize:12,color:rem===0?"#22c55e":rem!==null?"#f87171":"#334155"}}>{rem===0?"✓ CLEAR":rem!==null?fmt(rem):"—"}</div></div>);})}
                 </div>
               </div>
             )}
@@ -712,12 +763,12 @@ export default function ClientTracker() {
         );
       })()}
 
-      {tab==="completed" && (
+      {tab==="completed"&&(
         <div style={{padding:"20px 24px"}}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:20}}>
             <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#22c55e"}}>{completedClients.length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>COMPLETED PLANS</div></div>
             <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#34d399"}}>{fmt(completedTotal)}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>TOTAL COLLECTED</div></div>
-            <div style={{background:"#051a10",border:"1px solid #134d32",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:11,color:"#34d399",lineHeight:1.6,marginTop:4}}>Clients move here automatically when fully paid off. No longer in monthly projections.</div></div>
+            <div style={{background:"#051a10",border:"1px solid #134d32",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:11,color:"#34d399",lineHeight:1.6,marginTop:4}}>Clients move here automatically when fully paid off.</div></div>
           </div>
           {completedClients.length===0?(<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO COMPLETED PLANS YET</div></div>):(
             <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
@@ -728,14 +779,14 @@ export default function ClientTracker() {
         </div>
       )}
 
-      {tab==="pif" && (
+      {tab==="pif"&&(
         <div style={{padding:"20px 24px"}}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:20}}>
-            <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#34d399"}}>{pifClients.length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>PAY IN FULL CLIENTS</div></div>
-            <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#22c55e"}}>{fmt(pifTotal)}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>TOTAL COLLECTED</div></div>
-            <div style={{background:"#051a10",border:"1px solid #134d32",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:11,color:"#34d399",lineHeight:1.6,marginTop:4}}>PIF clients are one-time records and do not carry over month to month.</div></div>
+            <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#34d399"}}>{sortedPIF.length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>PAY IN FULL — {MONTHS[viewMonth].toUpperCase()}</div></div>
+            <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#22c55e"}}>{fmt(pifTotal)}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>TOTAL THIS MONTH</div></div>
+            <div style={{background:"#051a10",border:"1px solid #134d32",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:11,color:"#34d399",lineHeight:1.6,marginTop:4}}>PIF clients show only in the month they paid. Use month arrows to navigate.</div></div>
           </div>
-          {pifClients.length===0?(<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO PAY-IN-FULL CLIENTS YET</div></div>):(
+          {sortedPIF.length===0?(<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO PAY-IN-FULL FOR {MONTHS[viewMonth].toUpperCase()} {viewYear}</div></div>):(
             <div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
               <div style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 110px 1fr 36px",padding:"8px 16px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8}}><div>Client</div><div>Company</div><div>Amount</div><div>Paid Date</div><div>Notes</div><div/></div>
               {sortedPIF.map((c,i)=>(<div key={c.id} style={{display:"grid",gridTemplateColumns:"1.2fr 1fr 100px 110px 1fr 36px",padding:"12px 16px",borderTop:i===0?"none":"1px solid #1e293b12",alignItems:"center",background:i%2===0?"#080c10":"#0a0e14",gap:8}}><div><div style={{fontSize:13,fontWeight:500}}>{c.name}</div><div style={{display:"inline-block",marginTop:3,padding:"1px 7px",borderRadius:20,fontSize:9,background:"#052e16",color:"#22c55e",border:"1px solid #22c55e40"}}>PAID IN FULL</div></div><div style={{fontSize:12,color:"#64748b"}}>{c.company||"—"}</div><div style={{fontSize:12,color:"#22c55e",fontWeight:500}}>{c.amount?fmt(c.amount):"—"}</div><div style={{fontSize:12,color:"#64748b"}}>{c.paidDate||"—"}</div><div style={{fontSize:12,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.notes||"—"}</div><button className="btn" onClick={()=>removePIF(c.id)} style={{background:"none",color:"#334155",padding:"4px",fontSize:14}}>✕</button></div>))}
@@ -744,7 +795,7 @@ export default function ClientTracker() {
         </div>
       )}
 
-      {tab==="quotes" && (
+      {tab==="quotes"&&(
         <div style={{padding:"20px 24px"}}>
           <div style={{display:"flex",gap:12,marginBottom:20}}>
             <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px",flex:1}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#3b82f6"}}>{monthQuotes.length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>QUOTES THIS MONTH</div></div>
@@ -760,7 +811,7 @@ export default function ClientTracker() {
       )}
 
       {showAddClient&&(<div className="modal-overlay" onClick={()=>setShowAddClient(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:20}}>ADD PAYMENT CLIENT</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newClient.name} onChange={e=>setNewClient({...newClient,name:e.target.value})}/><input placeholder="Company" value={newClient.company} onChange={e=>setNewClient({...newClient,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>MONTHLY PMT</div><input placeholder="e.g. 1500" type="number" value={newClient.monthlyAmount} onChange={e=>setNewClient({...newClient,monthlyAmount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>TOTAL QUOTED</div><input placeholder="e.g. 6000" type="number" value={newClient.quotedTotal} onChange={e=>setNewClient({...newClient,quotedTotal:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DUE DAY</div><input placeholder="e.g. 15" type="number" min="1" max="31" value={newClient.dueDay} onChange={e=>setNewClient({...newClient,dueDay:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PARTNER (optional)</div><select value={newClient.partnerId||""} onChange={e=>setNewClient({...newClient,partnerId:e.target.value})}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><textarea placeholder="Notes" rows={2} value={newClient.notes} onChange={e=>setNewClient({...newClient,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{fontSize:10,color:"#475569",marginTop:10,lineHeight:1.6}}>Contract length auto-calculated from Total Quoted / Monthly Payment.</div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addClient} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddClient(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
-      {showAddDispute&&(<div className="modal-overlay" onClick={()=>setShowAddDispute(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#a78bfa"}}>ADD DISPUTE CLIENT</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>35-DAY PROCESSING CYCLE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>FIRST NAME *</div><input placeholder="First" value={newDispute.firstName} onChange={e=>setNewDispute({...newDispute,firstName:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST NAME</div><input placeholder="Last" value={newDispute.lastName} onChange={e=>setNewDispute({...newDispute,lastName:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PROCESSING DATE</div><input type="date" value={newDispute.processingDate} onChange={e=>setNewDispute({...newDispute,processingDate:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>CREDIT MONITORING</div><select value={newDispute.creditMonitoring} onChange={e=>setNewDispute({...newDispute,creditMonitoring:e.target.value})}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newDispute.service} onChange={e=>setNewDispute({...newDispute,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PARTNER (optional)</div><select value={newDispute.partnerId||""} onChange={e=>setNewDispute({...newDispute,partnerId:e.target.value})}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><textarea placeholder="Notes" rows={2} value={newDispute.notes} onChange={e=>setNewDispute({...newDispute,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addDisputeClient} style={{background:"#7c3aed",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddDispute(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
+      {showAddDispute&&(<div className="modal-overlay" onClick={()=>setShowAddDispute(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#a78bfa"}}>ADD DISPUTE CLIENT</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>35-DAY PROCESSING CYCLE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>FIRST NAME *</div><input placeholder="First" value={newDispute.firstName} onChange={e=>setNewDispute({...newDispute,firstName:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST NAME</div><input placeholder="Last" value={newDispute.lastName} onChange={e=>setNewDispute({...newDispute,lastName:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>EMAIL (for automated emails)</div><input placeholder="client@email.com" value={newDispute.email||""} onChange={e=>setNewDispute({...newDispute,email:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PROCESSING DATE</div><input type="date" value={newDispute.processingDate} onChange={e=>setNewDispute({...newDispute,processingDate:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>CREDIT MONITORING</div><select value={newDispute.creditMonitoring} onChange={e=>setNewDispute({...newDispute,creditMonitoring:e.target.value})}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newDispute.service} onChange={e=>setNewDispute({...newDispute,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PARTNER (optional)</div><select value={newDispute.partnerId||""} onChange={e=>setNewDispute({...newDispute,partnerId:e.target.value})}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><textarea placeholder="Notes" rows={2} value={newDispute.notes} onChange={e=>setNewDispute({...newDispute,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addDisputeClient} style={{background:"#7c3aed",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddDispute(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
       {showAddPartner&&(<div className="modal-overlay" onClick={()=>setShowAddPartner(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#fbbf24"}}>ADD PARTNER</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>REFERRAL PARTNER</div><input placeholder="Partner name *" value={newPartnerName} onChange={e=>setNewPartnerName(e.target.value)} style={{marginBottom:16}}/><div style={{display:"flex",gap:8}}><button className="btn" onClick={addPartner} style={{background:"#b45309",color:"#fbbf24",padding:"10px 20px",borderRadius:4,flex:1}}>ADD PARTNER</button><button className="btn" onClick={()=>setShowAddPartner(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
       {showAddPIF&&(<div className="modal-overlay" onClick={()=>setShowAddPIF(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#34d399"}}>ADD PAY IN FULL</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>ONE-TIME PAYMENT — DOES NOT RECUR</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newPIF.name} onChange={e=>setNewPIF({...newPIF,name:e.target.value})}/><input placeholder="Company" value={newPIF.company} onChange={e=>setNewPIF({...newPIF,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>AMOUNT PAID</div><input placeholder="e.g. 5000" type="number" value={newPIF.amount} onChange={e=>setNewPIF({...newPIF,amount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DATE PAID</div><input type="date" value={newPIF.paidDate} onChange={e=>setNewPIF({...newPIF,paidDate:e.target.value})}/></div></div><textarea placeholder="Notes / scope" rows={2} value={newPIF.notes} onChange={e=>setNewPIF({...newPIF,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addPIF} style={{background:"#065f46",color:"#34d399",padding:"10px 20px",borderRadius:4,flex:1}}>SAVE PIF CLIENT</button><button className="btn" onClick={()=>setShowAddPIF(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
       {showAddQuote&&(<div className="modal-overlay" onClick={()=>setShowAddQuote(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4}}>NEW QUOTE</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em",marginBottom:16}}>{MONTHS[viewMonth].toUpperCase()} {viewYear}</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Contact name *" value={newQuote.name} onChange={e=>setNewQuote({...newQuote,name:e.target.value})}/><input placeholder="Company" value={newQuote.company} onChange={e=>setNewQuote({...newQuote,company:e.target.value})}/><input placeholder="Quote amount (e.g. 2500)" type="number" value={newQuote.amount} onChange={e=>setNewQuote({...newQuote,amount:e.target.value})}/><textarea placeholder="What was quoted / scope notes" rows={3} value={newQuote.notes} onChange={e=>setNewQuote({...newQuote,notes:e.target.value})} style={{resize:"none"}}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addQuote} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>SAVE QUOTE</button><button className="btn" onClick={()=>setShowAddQuote(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
