@@ -16,6 +16,7 @@ const STATUS_CONFIG = {
 
 const CREDIT_MONITORING_OPTIONS = ["Credit Hero Score","Grow Funders","Other"];
 const SERVICE_OPTIONS = ["Repair","Funding","Tradelines","Inquiry Removal","Buildout"];
+const CMS_CHECKLIST_ITEMS = ["Credit Hero Score","Grow Funders","Government ID","Proof of Address","SSN Document","Other"];
 const FOLLOWUP_STATUS_OPTIONS = ["Hot","Warm","Cold","No Answer","Lost"];
 
 function genId() { return Math.random().toString(36).slice(2,10); }
@@ -110,6 +111,7 @@ export default function ClientTracker() {
   const [disputeClients,setDisputeClients]=useState([]);
   const [partners,setPartners]=useState([]);
   const [followUps,setFollowUps]=useState([]);
+  const [cmsClients,setCmsClients]=useState([]);
   const [payments,setPayments]=useState({});
   const [quotes,setQuotes]=useState({});
   const [loading,setLoading]=useState(true);
@@ -143,7 +145,7 @@ export default function ClientTracker() {
   const blankClient={name:"",company:"",monthlyAmount:"",quotedTotal:"",dueDay:"",notes:"",partnerId:""};
   const blankPIF={name:"",company:"",amount:"",paidDate:"",notes:""};
   const blankQuote={name:"",company:"",amount:"",notes:""};
-  const blankFollowUp={name:"",service:"",quotedAmount:"",lastContact:"",notes:"",status:"Hot"};
+  const blankFollowUp={name:"",service:"",quotedAmount:"",lastContact:"",notes:"",status:"Hot",partnerId:""};
   const blankDispute={firstName:"",lastName:"",processingDate:"",creditMonitoring:"",service:"",notes:"",partnerId:""};
 
   const [newClient,setNewClient]=useState(blankClient);
@@ -156,8 +158,8 @@ export default function ClientTracker() {
     async function load(){
       setLoading(true);
       try {
-        const [c,p,q,pif,comp,disp,part,fu]=await Promise.all([dbGet("clients"),dbGet("payments"),dbGet("quotes"),dbGet("pifClients"),dbGet("completedClients"),dbGet("disputeClients"),dbGet("partners"),dbGet("followUps")]);
-        if(c)setClients(c);if(p)setPayments(p);if(q)setQuotes(q);if(pif)setPifClients(pif);if(comp)setCompletedClients(comp);if(disp)setDisputeClients(disp);if(part)setPartners(part);if(fu)setFollowUps(fu);
+        const [c,p,q,pif,comp,disp,part,fu,cms]=await Promise.all([dbGet("clients"),dbGet("payments"),dbGet("quotes"),dbGet("pifClients"),dbGet("completedClients"),dbGet("disputeClients"),dbGet("partners"),dbGet("followUps"),dbGet("cmsClients")]);
+        if(c)setClients(c);if(p)setPayments(p);if(q)setQuotes(q);if(pif)setPifClients(pif);if(comp)setCompletedClients(comp);if(disp)setDisputeClients(disp);if(part)setPartners(part);if(fu)setFollowUps(fu);if(cms)setCmsClients(cms);
       }catch(e){console.error("Load error",e);}
       setLoading(false);
     }
@@ -170,6 +172,7 @@ export default function ClientTracker() {
   const saveDisputeClients=useCallback(async d=>{setDisputeClients(d);await dbSet("disputeClients",d);},[]);
   const savePartners=useCallback(async d=>{setPartners(d);await dbSet("partners",d);},[]);
   const saveFollowUps=useCallback(async d=>{setFollowUps(d);await dbSet("followUps",d);},[]);
+  const saveCmsClients=useCallback(async d=>{setCmsClients(d);await dbSet("cmsClients",d);},[]);
   const savePayments=useCallback(async d=>{setPayments(d);await dbSet("payments",d);},[]);
   const saveQuotes=useCallback(async d=>{setQuotes(d);await dbSet("quotes",d);},[]);
 
@@ -223,12 +226,26 @@ export default function ClientTracker() {
   function updateFollowUpField(id,field,value){saveFollowUps(followUps.map(f=>f.id===id?{...f,[field]:value}:f));}
   function touchFollowUp(id){saveFollowUps(followUps.map(f=>f.id===id?{...f,lastContact:new Date().toISOString().split("T")[0]}:f));}
   function convertFollowUp(lead,dest){
-    if(dest==="payments")saveClients([...clients,{id:genId(),name:lead.name,company:"",monthlyAmount:"",quotedTotal:lead.quotedAmount||"",dueDay:"",notes:lead.notes||"",partnerId:"",createdAt:new Date().toISOString()}]);
+    if(dest==="payments")saveClients([...clients,{id:genId(),name:lead.name,company:"",monthlyAmount:"",quotedTotal:lead.quotedAmount||"",dueDay:"",notes:lead.notes||"",partnerId:lead.partnerId||"",createdAt:new Date().toISOString()}]);
     else if(dest==="pif")savePifClients([...pifClients,{id:genId(),name:lead.name,company:"",amount:lead.quotedAmount||"",paidDate:new Date().toISOString().split("T")[0],notes:lead.notes||"",createdAt:new Date().toISOString()}]);
-    else if(dest==="disputes"){const parts=lead.name.trim().split(" ");saveDisputeClients([...disputeClients,{id:genId(),firstName:parts[0]||"",lastName:parts.slice(1).join(" ")||"",processingDate:"",creditMonitoring:"",service:lead.service||"",notes:lead.notes||"",partnerId:"",createdAt:new Date().toISOString()}]);}
+    else if(dest==="disputes"){const parts=lead.name.trim().split(" ");saveDisputeClients([...disputeClients,{id:genId(),firstName:parts[0]||"",lastName:parts.slice(1).join(" ")||"",processingDate:"",creditMonitoring:"",service:lead.service||"",notes:lead.notes||"",partnerId:lead.partnerId||"",createdAt:new Date().toISOString()}]);}
     saveFollowUps(followUps.filter(f=>f.id!==lead.id));setConvertLead(null);
     setTab(dest==="pif"?"pif":dest==="disputes"?"disputes":"payments");
   }
+  function flagForCMS(disputeClient){
+    const existing=cmsClients.find(c=>c.id===disputeClient.id);if(existing)return;
+    saveCmsClients([...cmsClients,{...disputeClient,cmsChecklist:{},cmsNotes:"",cmsFlaggedAt:new Date().toISOString()}]);
+    saveDisputeClients(disputeClients.filter(c=>c.id!==disputeClient.id));
+  }
+  function returnFromCMS(id){
+    const c=cmsClients.find(c=>c.id===id);if(!c)return;
+    const{cmsChecklist,cmsNotes,cmsFlaggedAt,...rest}=c;
+    saveDisputeClients([...disputeClients,rest]);
+    saveCmsClients(cmsClients.filter(c=>c.id!==id));
+  }
+  function toggleCMSCheck(id,item){saveCmsClients(cmsClients.map(c=>c.id===id?{...c,cmsChecklist:{...c.cmsChecklist,[item]:!c.cmsChecklist?.[item]}}:c));}
+  function updateCMSNotes(id,val){saveCmsClients(cmsClients.map(c=>c.id===id?{...c,cmsNotes:val}:c));}
+  function removeCMSClient(id){saveCmsClients(cmsClients.filter(c=>c.id!==id));}
 
   function handleCSVImport(file){
     if(!file||!file.name.endsWith(".csv")){setCsvImportMsg("Please drop a .csv file");return;}
@@ -245,7 +262,7 @@ export default function ClientTracker() {
   function exportPIF(){downloadCSV("pay_in_full.csv",sortedPIF.map(c=>({"Name":c.name,"Company":c.company||"","Amount":c.amount||"","Date Paid":c.paidDate||"","Notes":c.notes||""})),["Name","Company","Amount","Date Paid","Notes"]);}
   function exportQuotes(){const h=["Month","Year","Name","Company","Amount","Notes"];const r=[];Object.entries(quotes).forEach(([key,qs])=>{const parts=key.replace("quotes_","").split("_");(qs||[]).forEach(q=>r.push({"Month":MONTHS[parseInt(parts[1])]||parts[1],"Year":parts[0],"Name":q.name,"Company":q.company||"","Amount":q.amount||"","Notes":q.notes||""}));});r.sort((a,b)=>`${b.Year}${b.Month}`.localeCompare(`${a.Year}${a.Month}`));downloadCSV("quotes_all_time.csv",r,h);}
   function exportDisputes(){const h=["First Name","Last Name","Partner","Processing Date","Days Since","Status","Credit Monitoring","Service","Notes"];const r=disputeClients.map(c=>{const d=getDaysSince(c.processingDate);const pn=partners.find(p=>p.id===c.partnerId)?.name||"";return{"First Name":c.firstName,"Last Name":c.lastName,"Partner":pn,"Processing Date":c.processingDate||"","Days Since":d!==null?d:"","Status":getDisputeStatus(d),"Credit Monitoring":c.creditMonitoring||"","Service":c.service||"","Notes":c.notes||""};});downloadCSV("dispute_tracker.csv",r,h);}
-  function exportFollowUps(){const h=["Name","Service","Quoted Amount","Last Contact","Days Since","Status","Notes"];const r=followUps.map(f=>{const d=getDaysSince(f.lastContact);return{"Name":f.name,"Service":f.service||"","Quoted Amount":f.quotedAmount||"","Last Contact":f.lastContact||"","Days Since":d!==null?d:"","Status":f.status||"","Notes":f.notes||""};});downloadCSV("follow_ups.csv",r,h);}
+  function exportFollowUps(){const h=["Name","Service","Quoted Amount","Last Contact","Days Since","Status","Partner","Notes"];const r=followUps.map(f=>{const d=getDaysSince(f.lastContact);const pn=partners.find(p=>p.id===f.partnerId)?.name||"";return{"Name":f.name,"Service":f.service||"","Quoted Amount":f.quotedAmount||"","Last Contact":f.lastContact||"","Days Since":d!==null?d:"","Status":f.status||"","Partner":pn,"Notes":f.notes||""};});downloadCSV("follow_ups.csv",r,h);}
 
   const allRows=useMemo(()=>clients.filter(c=>isClientActiveInMonth(c,viewMonth,viewYear)).map(c=>{const raw=getPayData(c.id);return{...c,status:effectiveStatus(c,raw.status,viewMonth,viewYear),amountPaid:raw.amountPaid};}).sort((a,b)=>(parseInt(a.dueDay)||99)-(parseInt(b.dueDay)||99)),[clients,payments,viewMonth,viewYear]);
   const filtered=useMemo(()=>{let r=filterStatus==="all"?allRows:allRows.filter(c=>c.status===filterStatus);if(searchQuery)r=r.filter(c=>c.name.toLowerCase().includes(searchQuery.toLowerCase()));return r;},[allRows,filterStatus,searchQuery]);
@@ -267,11 +284,12 @@ export default function ClientTracker() {
   const hasAlarm=alarmClients.length>0&&!alarmDismissed;
   const dispCounts={alarm:0,overdue:0,warning:0,ok:0,none:0};
   disputeWithStatus.forEach(c=>{dispCounts[c.disputeStatus]=(dispCounts[c.disputeStatus]||0)+1;});
-  const partnerStats=useMemo(()=>partners.map(p=>{const pc=clients.filter(c=>c.partnerId===p.id);const dc=disputeClients.filter(c=>c.partnerId===p.id);return{...p,payClients:pc,dispClients:dc,totalClients:pc.length+dc.length,totalRevenue:pc.reduce((s,c)=>s+(parseFloat(c.quotedTotal)||0),0)};}), [partners,clients,disputeClients]);
+  const partnerStats=useMemo(()=>partners.map(p=>{const pc=clients.filter(c=>c.partnerId===p.id);const dc=disputeClients.filter(c=>c.partnerId===p.id);return{...p,payClients:pc,dispClients:dc,totalClients:pc.length+dc.length,totalRevenue:pc.reduce((s,c)=>s+(parseFloat(c.quotedTotal)||0),0)};}),[partners,clients,disputeClients]);
   const followUpsWithStatus=useMemo(()=>followUps.map(f=>{const d=getDaysSince(f.lastContact);return{...f,daysSince:d,fc:getFUColor(d),fb:getFUBg(d),fl:getFULabel(d)};}).sort((a,b)=>{const aS=a.daysSince===null?-1:a.daysSince>14?0:a.daysSince>7?1:2;const bS=b.daysSince===null?-1:b.daysSince>14?0:b.daysSince>7?1:2;return aS-bS;}),[followUps]);
   const filteredFollowUps=useMemo(()=>{let r=fuFilter==="all"?followUpsWithStatus:followUpsWithStatus.filter(f=>f.status===fuFilter);if(fuSearch)r=r.filter(f=>f.name.toLowerCase().includes(fuSearch.toLowerCase()));return r;},[followUpsWithStatus,fuFilter,fuSearch]);
   const fuColdCount=followUpsWithStatus.filter(f=>f.daysSince!==null&&f.daysSince>14).length;
   const pipelineTotal=followUps.reduce((s,f)=>s+(parseFloat(f.quotedAmount)||0),0);
+  const cmsCount=cmsClients.length;
 
   if(loading)return(<div style={{fontFamily:"'DM Mono',monospace",background:"#080c10",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#334155"}}><div style={{textAlign:"center"}}><div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:32,letterSpacing:"0.15em",color:"#1e3a5f",marginBottom:8}}>CREDITRACK</div><div style={{fontSize:11,letterSpacing:"0.2em",animation:"pulse 1.5s infinite"}}>LOADING...</div><style>{`@keyframes pulse{0%,100%{opacity:0.3}50%{opacity:1}}`}</style></div></div>);
 
@@ -317,7 +335,7 @@ export default function ClientTracker() {
     </div>
 
     <div style={{display:"flex",borderBottom:"1px solid #1e293b",background:"#0a0e14",overflowX:"auto"}}>
-      {[["payments","PAYMENTS"],["disputes","DISPUTES"+(dispCounts.alarm>0?" 🚨":"")],["followup","FOLLOW-UP"+(fuColdCount>0?" 🔴":"")],["partners","PARTNERS"],["completed","COMPLETED"],["pif","PAY IN FULL"],["quotes","QUOTES"]].map(([k,label])=>(
+      {[["payments","PAYMENTS"],["disputes","DISPUTES"+(dispCounts.alarm>0?" 🚨":"")],["cms","CMS / DOCS"+(cmsCount>0?" 🟡":"")],["followup","FOLLOW-UP"+(fuColdCount>0?" 🔴":"")],["partners","PARTNERS"],["completed","COMPLETED"],["pif","PAY IN FULL"],["quotes","QUOTES"]].map(([k,label])=>(
         <button key={k} className="btn" onClick={()=>{setTab(k);setSelectedPartner(null);}} style={{background:"none",color:tab===k?"#3b82f6":"#64748b",padding:"12px 16px",borderBottom:tab===k?"2px solid #3b82f6":"2px solid transparent",fontSize:11,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>{label}</button>
       ))}
       <div style={{flex:1}}/>
@@ -400,14 +418,14 @@ export default function ClientTracker() {
       <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:20}}>{[{key:"all",label:"Total",color:"#94a3b8",count:disputeClients.length},{key:"alarm",label:"OVERDUE",color:"#ef4444",count:dispCounts.alarm||0},{key:"overdue",label:"Due Soon",color:"#f97316",count:dispCounts.overdue||0},{key:"warning",label:"Warning",color:"#facc15",count:dispCounts.warning||0},{key:"ok",label:"On Track",color:"#22c55e",count:dispCounts.ok||0}].map(item=>(<button key={item.key} className="btn" onClick={()=>setDisputeFilter(disputeFilter===item.key&&item.key!=="all"?"all":item.key)} style={{background:disputeFilter===item.key?"#1e293b":"#0f172a",border:`1px solid ${disputeFilter===item.key?item.color:"#1e293b"}`,borderRadius:6,padding:"10px 14px",textAlign:"left"}}><div style={{fontSize:22,fontFamily:"'Bebas Neue'",color:item.color}}>{item.count}</div><div style={{fontSize:9,color:"#64748b",letterSpacing:"0.1em",marginTop:2}}>{item.label.toUpperCase()}</div></button>))}</div>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}><input className="search-bar" placeholder="🔍  Search by name..." value={disputeSearch} onChange={e=>setDisputeSearch(e.target.value)}/>{disputeSearch&&<button className="btn" onClick={()=>setDisputeSearch("")} style={{background:"none",color:"#64748b",padding:"0 4px"}}>✕ clear</button>}</div>
       {disputeClients.length===0?(<div style={{textAlign:"center",padding:"40px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO DISPUTE CLIENTS YET</div></div>):(<div style={{border:"1px solid #1e293b",borderRadius:6,overflow:"hidden"}}>
-        <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px",padding:"8px 14px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8,alignItems:"center"}}><div/><div>Client</div><div>Last Processed</div><div>Days</div><div>Status</div><div>Monitoring</div><div>Service</div><div/></div>
+        <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px 28px",padding:"8px 14px",background:"#0f172a",fontSize:10,color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",gap:8,alignItems:"center"}}><div/><div>Client</div><div>Last Processed</div><div>Days</div><div>Status</div><div>Monitoring</div><div>Service</div><div/><div/></div>
         {filteredDisputes.map((c,i)=>{
           const isExp=expandedDispId===c.id;const ia=c.disputeStatus==="alarm";const io=c.disputeStatus==="overdue";const iw=c.disputeStatus==="warning";
           const sc=ia?"#ef4444":io?"#f97316":iw?"#facc15":"#22c55e";const sl=ia?"OVERDUE":io?"DUE SOON":iw?"WARNING":"ON TRACK";
           const rb=ia?(i%2===0?"#1a0000":"#1e0000"):io?(i%2===0?"#1a0800":"#1e0a00"):(i%2===0?"#080c10":"#090d13");
           const pn=partners.find(p=>p.id===c.partnerId)?.name||"";
           return(<div key={c.id} style={{borderTop:i===0?"none":"1px solid #1e293b20"}}>
-            <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px",padding:"11px 14px",alignItems:"center",background:rb,gap:8,cursor:"pointer",borderLeft:`3px solid ${sc}60`,animation:ia?"flashRed 0.8s infinite":""}} onClick={()=>setExpandedDispId(isExp?null:c.id)}>
+            <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 100px 80px 120px 120px 140px 28px 28px",padding:"11px 14px",alignItems:"center",background:rb,gap:8,cursor:"pointer",borderLeft:`3px solid ${sc}60`,animation:ia?"flashRed 0.8s infinite":""}} onClick={()=>setExpandedDispId(isExp?null:c.id)}>
               <div style={{color:"#334155",fontSize:11,userSelect:"none"}}>{isExp?"▾":"▸"}</div>
               <div><div style={{fontSize:13,fontWeight:500,color:ia?"#fca5a5":"#e2e8f0"}}>{c.firstName} {c.lastName}</div>{pn&&<div style={{fontSize:9,color:"#fbbf24",background:"#1a1200",padding:"1px 6px",borderRadius:10,border:"1px solid #fbbf2430",display:"inline-block",marginTop:2}}>↗ {pn}</div>}</div>
               <div style={{fontSize:12,color:"#64748b"}}>{c.processingDate||"—"}</div>
@@ -415,6 +433,7 @@ export default function ClientTracker() {
               <div><span style={{padding:"2px 8px",borderRadius:20,fontSize:9,letterSpacing:"0.08em",background:ia?"#200000":io?"#1a0800":iw?"#1a1600":"#052e16",color:sc,border:`1px solid ${sc}40`}}>{sl}</span></div>
               <div style={{fontSize:11,color:"#64748b"}}>{c.creditMonitoring||"—"}</div>
               <div style={{fontSize:11,color:"#94a3b8"}}>{c.service||"—"}</div>
+              <button className="btn" title="Needs CMS update" onClick={e=>{e.stopPropagation();flagForCMS(c);}} style={{background:"none",color:"#facc15",padding:"4px",fontSize:13}}>🚩</button>
               <button className="btn" onClick={e=>{e.stopPropagation();removeDisputeClient(c.id);}} style={{background:"none",color:"#334155",padding:"4px",fontSize:13}}>✕</button>
             </div>
             {isExp&&(<div style={{background:"#0b1018",borderTop:"1px solid #1e293b30",padding:"16px 20px 16px 50px",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:20}}>
@@ -449,6 +468,52 @@ export default function ClientTracker() {
       </div>)}
     </div>)}
 
+    {tab==="cms"&&(<div style={{padding:"20px 24px"}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:20}}>
+        <div style={{background:"#1a1200",border:"1px solid #fbbf2440",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#fbbf24"}}>{cmsClients.length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>NEEDS CMS UPDATE</div></div>
+        <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:6,padding:"12px 20px",gridColumn:"span 2",display:"flex",alignItems:"center"}}><div style={{fontSize:10,color:"#64748b",lineHeight:1.7}}>Flag dispute clients with 🚩 to move them here. Complete their checklist, then send them back to Disputes when ready.</div></div>
+      </div>
+      {cmsClients.length===0?(<div style={{textAlign:"center",padding:"60px 0",color:"#334155"}}><div style={{fontSize:40,marginBottom:8}}>◎</div><div style={{fontSize:12,letterSpacing:"0.1em"}}>NO CLIENTS FLAGGED YET</div><div style={{fontSize:11,color:"#334155",marginTop:8}}>Tap 🚩 on any dispute client row to move them here.</div></div>):(
+        <div style={{display:"flex",flexDirection:"column",gap:16}}>
+          {cmsClients.map(c=>{
+            const checkedCount=Object.values(c.cmsChecklist||{}).filter(Boolean).length;
+            const allDone=checkedCount===CMS_CHECKLIST_ITEMS.length;
+            const pn=partners.find(p=>p.id===c.partnerId)?.name||"";
+            return(<div key={c.id} style={{background:allDone?"#051a10":"#0f172a",border:`1px solid ${allDone?"#22c55e40":"#1e293b"}`,borderRadius:8,padding:"20px 24px",borderLeft:`4px solid ${allDone?"#22c55e":"#fbbf24"}`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
+                <div>
+                  <div style={{fontSize:16,fontWeight:600,color:allDone?"#22c55e":"#e2e8f0"}}>{c.firstName} {c.lastName}</div>
+                  <div style={{display:"flex",gap:8,marginTop:4,flexWrap:"wrap"}}>
+                    {c.service&&<div style={{fontSize:10,color:"#64748b"}}>{c.service}</div>}
+                    {pn&&<div style={{fontSize:9,color:"#fbbf24",background:"#1a1200",padding:"1px 6px",borderRadius:10,border:"1px solid #fbbf2430"}}>↗ {pn}</div>}
+                    <div style={{fontSize:10,color:"#475569"}}>Flagged {c.cmsFlaggedAt?new Date(c.cmsFlaggedAt).toLocaleDateString():"—"}</div>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <div style={{fontSize:11,color:allDone?"#22c55e":"#facc15",fontWeight:600}}>{checkedCount}/{CMS_CHECKLIST_ITEMS.length} complete</div>
+                  <button className="btn" onClick={()=>returnFromCMS(c.id)} style={{background:"#1e3a5f",color:"#60a5fa",padding:"6px 14px",borderRadius:4,fontSize:10}}>↩ BACK TO DISPUTES</button>
+                  <button className="btn" onClick={()=>removeCMSClient(c.id)} style={{background:"none",color:"#334155",padding:"4px",fontSize:13}}>✕</button>
+                </div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
+                {CMS_CHECKLIST_ITEMS.map(item=>{
+                  const checked=!!(c.cmsChecklist||{})[item];
+                  return(<div key={item} onClick={()=>toggleCMSCheck(c.id,item)} style={{display:"flex",alignItems:"center",gap:8,background:checked?"#052e16":"#080c10",border:`1px solid ${checked?"#22c55e40":"#1e293b"}`,borderRadius:4,padding:"8px 12px",cursor:"pointer",transition:"all 0.15s"}}>
+                    <div style={{width:16,height:16,borderRadius:3,border:`2px solid ${checked?"#22c55e":"#334155"}`,background:checked?"#22c55e":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                      {checked&&<div style={{color:"#080c10",fontSize:11,fontWeight:700,lineHeight:1}}>✓</div>}
+                    </div>
+                    <div style={{fontSize:11,color:checked?"#22c55e":"#94a3b8"}}>{item}</div>
+                  </div>);
+                })}
+              </div>
+              <div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:6}}>NOTES</div><textarea defaultValue={c.cmsNotes||""} onBlur={e=>updateCMSNotes(c.id,e.target.value)} placeholder="What's missing, what was requested..." style={{fontSize:11,minHeight:50}}/></div>
+              {allDone&&<div style={{marginTop:12,padding:"8px 14px",background:"#052e16",border:"1px solid #22c55e40",borderRadius:4,fontSize:11,color:"#22c55e"}}>✓ All items collected — ready to return to Disputes</div>}
+            </div>);
+          })}
+        </div>
+      )}
+    </div>)}
+
     {tab==="followup"&&(<div style={{padding:"20px 24px"}}>
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
         <div style={{background:"#0a1218",border:"1px solid #0e4a5a",borderRadius:6,padding:"12px 20px"}}><div style={{fontSize:28,fontFamily:"'Bebas Neue'",color:"#22d3ee"}}>{followUps.length}</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em"}}>OPEN LEADS</div></div>
@@ -465,10 +530,11 @@ export default function ClientTracker() {
         {filteredFollowUps.map((f,i)=>{
           const isExp=expandedFuId===f.id;
           const rb=f.daysSince!==null&&f.daysSince>14?(i%2===0?"#130808":"#150909"):f.daysSince!==null&&f.daysSince>7?(i%2===0?"#131100":"#151300"):(i%2===0?"#080c10":"#090d13");
+          const fpn=partners.find(p=>p.id===f.partnerId)?.name||"";
           return(<div key={f.id} style={{borderTop:i===0?"none":"1px solid #1e293b20"}}>
             <div style={{display:"grid",gridTemplateColumns:"20px 1.4fr 1fr 100px 110px 90px 120px 100px 28px",padding:"11px 14px",alignItems:"center",background:rb,gap:8,cursor:"pointer",borderLeft:`3px solid ${f.fc}60`}} onClick={()=>setExpandedFuId(isExp?null:f.id)}>
               <div style={{color:"#334155",fontSize:11,userSelect:"none"}}>{isExp?"▾":"▸"}</div>
-              <div><div style={{fontSize:13,fontWeight:500,color:"#e2e8f0"}}>{f.name}</div>{f.status&&<div style={{fontSize:9,color:"#64748b",marginTop:2}}>{f.status}</div>}</div>
+              <div><div style={{fontSize:13,fontWeight:500,color:"#e2e8f0"}}>{f.name}</div><div style={{display:"flex",gap:6,marginTop:2}}>{f.status&&<div style={{fontSize:9,color:"#64748b"}}>{f.status}</div>}{fpn&&<div style={{fontSize:9,color:"#fbbf24",background:"#1a1200",padding:"1px 6px",borderRadius:10,border:"1px solid #fbbf2430"}}>↗ {fpn}</div>}</div></div>
               <div style={{fontSize:12,color:"#94a3b8"}}>{f.service||"—"}</div>
               <div style={{fontSize:12,color:"#22c55e",fontWeight:500}}>{f.quotedAmount?fmt(f.quotedAmount):"—"}</div>
               <div style={{fontSize:11,color:"#64748b"}}>{f.lastContact||"Never"}</div>
@@ -497,6 +563,7 @@ export default function ClientTracker() {
                   <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>QUOTED AMOUNT</div><input type="number" defaultValue={f.quotedAmount||""} onBlur={e=>updateFollowUpField(f.id,"quotedAmount",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                   <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>LAST CONTACT</div><input type="date" defaultValue={f.lastContact||""} onBlur={e=>updateFollowUpField(f.id,"lastContact",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                   <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>STATUS</div><select defaultValue={f.status||"Hot"} onBlur={e=>updateFollowUpField(f.id,"status",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}>{FOLLOWUP_STATUS_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+                  <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>PARTNER</div><select defaultValue={f.partnerId||""} onBlur={e=>updateFollowUpField(f.id,"partnerId",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
                   <div><div style={{fontSize:9,color:"#334155",letterSpacing:"0.08em",marginBottom:3}}>NOTES</div><textarea defaultValue={f.notes||""} onBlur={e=>updateFollowUpField(f.id,"notes",e.target.value)} onClick={e=>e.stopPropagation()} style={{fontSize:11}}/></div>
                 </div>
               </div>
@@ -579,7 +646,7 @@ export default function ClientTracker() {
 
     {showAddClient&&(<div className="modal-overlay" onClick={()=>setShowAddClient(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:20}}>ADD PAYMENT CLIENT</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newClient.name} onChange={e=>setNewClient({...newClient,name:e.target.value})}/><input placeholder="Company" value={newClient.company} onChange={e=>setNewClient({...newClient,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>MONTHLY PMT</div><input placeholder="e.g. 1500" type="number" value={newClient.monthlyAmount} onChange={e=>setNewClient({...newClient,monthlyAmount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>TOTAL QUOTED</div><input placeholder="e.g. 6000" type="number" value={newClient.quotedTotal} onChange={e=>setNewClient({...newClient,quotedTotal:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DUE DAY</div><input placeholder="e.g. 15" type="number" min="1" max="31" value={newClient.dueDay} onChange={e=>setNewClient({...newClient,dueDay:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PARTNER (optional)</div><select value={newClient.partnerId||""} onChange={e=>setNewClient({...newClient,partnerId:e.target.value})}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><textarea placeholder="Notes" value={newClient.notes} onChange={e=>setNewClient({...newClient,notes:e.target.value})}/></div><div style={{fontSize:10,color:"#475569",marginTop:10,lineHeight:1.6}}>Contract length auto-calculated from Total Quoted / Monthly Payment.</div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addClient} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddClient(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
     {showAddDispute&&(<div className="modal-overlay" onClick={()=>setShowAddDispute(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#a78bfa"}}>ADD DISPUTE CLIENT</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>35-DAY PROCESSING CYCLE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>FIRST NAME *</div><input placeholder="First" value={newDispute.firstName} onChange={e=>setNewDispute({...newDispute,firstName:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST NAME</div><input placeholder="Last" value={newDispute.lastName} onChange={e=>setNewDispute({...newDispute,lastName:e.target.value})}/></div></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PROCESSING DATE</div><input type="date" value={newDispute.processingDate} onChange={e=>setNewDispute({...newDispute,processingDate:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>CREDIT MONITORING</div><select value={newDispute.creditMonitoring} onChange={e=>setNewDispute({...newDispute,creditMonitoring:e.target.value})}><option value="">Select...</option>{CREDIT_MONITORING_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newDispute.service} onChange={e=>setNewDispute({...newDispute,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PARTNER (optional)</div><select value={newDispute.partnerId||""} onChange={e=>setNewDispute({...newDispute,partnerId:e.target.value})}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><textarea placeholder="Notes" value={newDispute.notes} onChange={e=>setNewDispute({...newDispute,notes:e.target.value})}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addDisputeClient} style={{background:"#7c3aed",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>ADD CLIENT</button><button className="btn" onClick={()=>setShowAddDispute(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
-    {showAddFollowUp&&(<div className="modal-overlay" onClick={()=>setShowAddFollowUp(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#22d3ee"}}>ADD LEAD</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>FOLLOW-UP PIPELINE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newFollowUp.name} onChange={e=>setNewFollowUp({...newFollowUp,name:e.target.value})}/><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newFollowUp.service||""} onChange={e=>setNewFollowUp({...newFollowUp,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>QUOTED AMOUNT</div><input placeholder="e.g. 2500" type="number" value={newFollowUp.quotedAmount} onChange={e=>setNewFollowUp({...newFollowUp,quotedAmount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST CONTACT DATE</div><input type="date" value={newFollowUp.lastContact} onChange={e=>setNewFollowUp({...newFollowUp,lastContact:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>STATUS</div><select value={newFollowUp.status} onChange={e=>setNewFollowUp({...newFollowUp,status:e.target.value})}>{FOLLOWUP_STATUS_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><textarea placeholder="What was discussed, objections, next steps..." value={newFollowUp.notes} onChange={e=>setNewFollowUp({...newFollowUp,notes:e.target.value})}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addFollowUp} style={{background:"#0e7490",color:"#22d3ee",padding:"10px 20px",borderRadius:4,flex:1}}>ADD LEAD</button><button className="btn" onClick={()=>setShowAddFollowUp(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
+    {showAddFollowUp&&(<div className="modal-overlay" onClick={()=>setShowAddFollowUp(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#22d3ee"}}>ADD LEAD</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>FOLLOW-UP PIPELINE</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newFollowUp.name} onChange={e=>setNewFollowUp({...newFollowUp,name:e.target.value})}/><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>SERVICE</div><select value={newFollowUp.service||""} onChange={e=>setNewFollowUp({...newFollowUp,service:e.target.value})}><option value="">Select...</option>{SERVICE_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>QUOTED AMOUNT</div><input placeholder="e.g. 2500" type="number" value={newFollowUp.quotedAmount} onChange={e=>setNewFollowUp({...newFollowUp,quotedAmount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>LAST CONTACT DATE</div><input type="date" value={newFollowUp.lastContact} onChange={e=>setNewFollowUp({...newFollowUp,lastContact:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>STATUS</div><select value={newFollowUp.status} onChange={e=>setNewFollowUp({...newFollowUp,status:e.target.value})}>{FOLLOWUP_STATUS_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>PARTNER (optional)</div><select value={newFollowUp.partnerId||""} onChange={e=>setNewFollowUp({...newFollowUp,partnerId:e.target.value})}><option value="">No partner</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><textarea placeholder="What was discussed, objections, next steps..." value={newFollowUp.notes} onChange={e=>setNewFollowUp({...newFollowUp,notes:e.target.value})}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addFollowUp} style={{background:"#0e7490",color:"#22d3ee",padding:"10px 20px",borderRadius:4,flex:1}}>ADD LEAD</button><button className="btn" onClick={()=>setShowAddFollowUp(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
     {showAddPartner&&(<div className="modal-overlay" onClick={()=>setShowAddPartner(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#fbbf24"}}>ADD PARTNER</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>REFERRAL PARTNER</div><input placeholder="Partner name *" value={newPartnerName} onChange={e=>setNewPartnerName(e.target.value)} style={{marginBottom:16}}/><div style={{display:"flex",gap:8}}><button className="btn" onClick={addPartner} style={{background:"#b45309",color:"#fbbf24",padding:"10px 20px",borderRadius:4,flex:1}}>ADD PARTNER</button><button className="btn" onClick={()=>setShowAddPartner(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
     {showAddPIF&&(<div className="modal-overlay" onClick={()=>setShowAddPIF(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4,color:"#34d399"}}>ADD PAY IN FULL</div><div style={{fontSize:10,color:"#475569",letterSpacing:"0.1em",marginBottom:20}}>ONE-TIME PAYMENT — DOES NOT RECUR</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Full name *" value={newPIF.name} onChange={e=>setNewPIF({...newPIF,name:e.target.value})}/><input placeholder="Company" value={newPIF.company} onChange={e=>setNewPIF({...newPIF,company:e.target.value})}/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>AMOUNT PAID</div><input placeholder="e.g. 5000" type="number" value={newPIF.amount} onChange={e=>setNewPIF({...newPIF,amount:e.target.value})}/></div><div><div style={{fontSize:9,color:"#475569",letterSpacing:"0.1em",marginBottom:4}}>DATE PAID</div><input type="date" value={newPIF.paidDate} onChange={e=>setNewPIF({...newPIF,paidDate:e.target.value})}/></div></div><textarea placeholder="Notes / scope" value={newPIF.notes} onChange={e=>setNewPIF({...newPIF,notes:e.target.value})}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addPIF} style={{background:"#065f46",color:"#34d399",padding:"10px 20px",borderRadius:4,flex:1}}>SAVE PIF CLIENT</button><button className="btn" onClick={()=>setShowAddPIF(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
     {showAddQuote&&(<div className="modal-overlay" onClick={()=>setShowAddQuote(false)}><div className="modal" onClick={e=>e.stopPropagation()}><div style={{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:"0.12em",marginBottom:4}}>NEW QUOTE</div><div style={{fontSize:10,color:"#64748b",letterSpacing:"0.1em",marginBottom:16}}>{MONTHS[viewMonth].toUpperCase()} {viewYear}</div><div style={{display:"flex",flexDirection:"column",gap:10}}><input placeholder="Contact name *" value={newQuote.name} onChange={e=>setNewQuote({...newQuote,name:e.target.value})}/><input placeholder="Company" value={newQuote.company} onChange={e=>setNewQuote({...newQuote,company:e.target.value})}/><input placeholder="Quote amount (e.g. 2500)" type="number" value={newQuote.amount} onChange={e=>setNewQuote({...newQuote,amount:e.target.value})}/><textarea placeholder="What was quoted / scope notes" value={newQuote.notes} onChange={e=>setNewQuote({...newQuote,notes:e.target.value})}/></div><div style={{display:"flex",gap:8,marginTop:16}}><button className="btn" onClick={addQuote} style={{background:"#1d4ed8",color:"#fff",padding:"10px 20px",borderRadius:4,flex:1}}>SAVE QUOTE</button><button className="btn" onClick={()=>setShowAddQuote(false)} style={{background:"#1e293b",color:"#94a3b8",padding:"10px 20px",borderRadius:4}}>CANCEL</button></div></div></div>)}
